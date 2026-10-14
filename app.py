@@ -165,172 +165,173 @@ def analyze(path):
     """
     Потоковый парсинг выгрузки. Возвращает (employees, days, meta).
     meta = {'year': 2026, 'month': 8, 'period_key': '2026-08'}
+    Память O(1): не копим весь файл, храним только окно из 3 строк.
     """
     DEPT_MAP = load_departments()
 
     wb = load_workbook(path, data_only=True, read_only=True, keep_links=False)
     ws = wb.active
 
-    # Шапка: ищем строку с "за Август 2026" среди первых 5 строк
-    head_row = None
-    year, month = datetime.now().year, datetime.now().month
     rows_iter = ws.iter_rows(values_only=True)
-    header_buf = []
+
+    # --- 1. Ищем шапку: читаем первые до 11 строк ---
+    year, month = datetime.now().year, datetime.now().month
     for idx, row in enumerate(rows_iter):
-        header_buf.append(row)
         joined = ' '.join(txt(c) for c in row[:15])
         if re.search(r'\bза\s+[А-Яа-я]+', joined) or re.search(r'\b[А-Яа-я]+\s+20\d{2}', joined):
-            head_row = row
             year, month = parse_period(joined)
             break
         if idx > 10:
             break
-    # Продолжаем читать в потоковом режиме
-    # Храним окно: последние 3 строки (шапка, сотрудник, данные)
-    window = list(header_buf)  # уже прочитанные первые строки
+
     employees = []
     days = []
-    header_marker = 0
-    # Догружаем остальные строки по мере надобности
-    all_rows = window
+
+    # --- 2. Потоковый проход с окном из 3 строк ---
+    # Структура: строка сотрудника → пропуск → строка данных.
+    # Храним только последние 3 строки, не копим весь файл.
+    window = []
     for row in rows_iter:
-        all_rows.append(row)
+        window.append(row)
+        if len(window) > 3:
+            window.pop(0)
 
-    max_row = len(all_rows)
-    i = 0
-    while i < max_row:
-        row = all_rows[i]
-        if not is_employee_row(row):
-            i += 1
-            continue
-        if i + 2 >= max_row:
-            break
-        unit = txt(row[2]) if len(row) > 2 else ''
-        department = DEPT_MAP.get(unit, unit) if unit else NO_DEPT
-        position = txt(row[5]) if len(row) > 5 else ''
-        work_format = txt(row[8]) if len(row) > 8 else ''
-        if not work_format: work_format = 'Не указан'
-        fmt = format_kind(work_format)
-        raw_schedule = txt(row[9]) if len(row) > 9 else ''
-        rule = parse_schedule(raw_schedule)
-        is_missing = rule['type'] == 'missing'
+        # Обрабатываем, когда в окне ровно 3 строки и первая — сотрудник
+        if len(window) == 3 and is_employee_row(window[0]):
+            emp_row = window[0]
+            data_row = window[2]
 
-        e = {
-            'number': txt(row[1]), 'name': txt(row[3]),
-            'position': position,
-            'department': department, 'unit': unit,
-            'personnel': txt(row[4]),
-            'work_format': work_format, 'schedule': raw_schedule or 'График не указан',
-            'rule': rule,
-            'summary': {
-                'work': 0, 'remote': 0, 'late': 0, 'early': 0, 'anomaly': 0,
-                'late_leave': 0, 'above': 0.0, 'below': 0.0, 'off': 0,
-                'problems': 0, 'excluded': False, 'termination': is_missing
+            unit = txt(emp_row[2]) if len(emp_row) > 2 else ''
+            department = DEPT_MAP.get(unit, unit) if unit else NO_DEPT
+            position = txt(emp_row[5]) if len(emp_row) > 5 else ''
+            work_format = txt(emp_row[8]) if len(emp_row) > 8 else ''
+            if not work_format:
+                work_format = 'Не указан'
+            fmt = format_kind(work_format)
+            raw_schedule = txt(emp_row[9]) if len(emp_row) > 9 else ''
+            rule = parse_schedule(raw_schedule)
+            is_missing = rule['type'] == 'missing'
+
+            e = {
+                'number': txt(emp_row[1]), 'name': txt(emp_row[3]),
+                'position': position,
+                'department': department, 'unit': unit,
+                'personnel': txt(emp_row[4]),
+                'work_format': work_format,
+                'schedule': raw_schedule or 'График не указан',
+                'rule': rule,
+                'summary': {
+                    'work': 0, 'remote': 0, 'late': 0, 'early': 0, 'anomaly': 0,
+                    'late_leave': 0, 'above': 0.0, 'below': 0.0, 'off': 0,
+                    'problems': 0, 'excluded': False, 'termination': is_missing
+                }
             }
-        }
 
-        data_row = all_rows[i + 2]
-        for day in range(1, 32):
-            c = 49 + (day - 1) * 2
-            if c + 1 >= len(row) or c + 1 >= len(data_row):
-                break
-            try:
-                date = datetime(year, month, day).strftime('%d.%m.%Y')
-            except Exception:
-                continue
-            raw = row[c] if c < len(row) else None
-            rv = num(data_row[c]) if c < len(data_row) else 0.0
-            skud = num(data_row[c + 1]) if c + 1 < len(data_row) else 0.0
-            start, end = parse_interval(raw)
-            statuses = []
-            kind = ''
-            plan = '—'
-            m = strict_day(rule, is_missing, start, end, rv, skud)
+            # --- обход дней ---
+            for day in range(1, 32):
+                c = 49 + (day - 1) * 2
+                if c + 1 >= len(emp_row) or c + 1 >= len(data_row):
+                    break
+                try:
+                    date = datetime(year, month, day).strftime('%d.%m.%Y')
+                except Exception:
+                    continue
+                raw = emp_row[c] if c < len(emp_row) else None
+                rv = num(data_row[c]) if c < len(data_row) else 0.0
+                skud = num(data_row[c + 1]) if c + 1 < len(data_row) else 0.0
+                start, end = parse_interval(raw)
+                statuses = []
+                kind = ''
+                plan = '—'
+                m = strict_day(rule, is_missing, start, end, rv, skud)
 
-            if is_missing:
-                if rv > 0:
-                    e['summary']['work'] += 1
-                    if skud > 0:
-                        d = (skud - rv) * 60
-                        if d > 5:
-                            statuses.append('Отклонение длительности СКУД от РВ: +' + fm(d))
-                            e['summary']['above'] += skud - rv
-                        elif d < -5:
-                            statuses.append('Отклонение длительности СКУД от РВ: ' + fm(d))
-                            e['summary']['below'] += rv - skud
+                if is_missing:
+                    if rv > 0:
+                        e['summary']['work'] += 1
+                        if skud > 0:
+                            d = (skud - rv) * 60
+                            if d > 5:
+                                statuses.append('Отклонение длительности СКУД от РВ: +' + fm(d))
+                                e['summary']['above'] += skud - rv
+                            elif d < -5:
+                                statuses.append('Отклонение длительности СКУД от РВ: ' + fm(d))
+                                e['summary']['below'] += rv - skud
+                            else:
+                                statuses.append('СКУД соответствует РВ')
                         else:
-                            statuses.append('СКУД соответствует РВ')
-                    else:
-                        statuses = ['Удалённая работа (потенциально)']
-                        kind = 'remote'
-                        e['summary']['remote'] += 1
-            elif rule['type'] == 'free':
-                if raw or skud > 0:
-                    statuses = ['Свободное посещение/Подработка']
-                    kind = 'free'
-            elif rv <= 0:
-                if raw or skud > 0:
-                    statuses = ['Посещение вне графика / переработка']
-                    kind = 'off_schedule'
-                    e['summary']['off'] += 1
-            elif fmt == 'remote' and not raw and skud <= 0:
-                statuses = ['Удалённая работа']
-                kind = 'remote'
-                e['summary']['remote'] += 1
-                e['summary']['work'] += 1
-            elif fmt == 'hybrid' and not raw and skud <= 0:
-                statuses = ['Гибрид/удалённая работа']
-                kind = 'remote'
-                e['summary']['remote'] += 1
-                e['summary']['work'] += 1
-            else:
-                e['summary']['work'] += 1
-                if rule['start'] is None:
-                    statuses = ['Нераспознанный график']
-                    kind = 'unknown'
-                    e['summary']['problems'] += 1
+                            statuses = ['Удалённая работа (потенциально)']
+                            kind = 'remote'
+                            e['summary']['remote'] += 1
+                elif rule['type'] == 'free':
+                    if raw or skud > 0:
+                        statuses = ['Свободное посещение/Подработка']
+                        kind = 'free'
+                elif rv <= 0:
+                    if raw or skud > 0:
+                        statuses = ['Посещение вне графика / переработка']
+                        kind = 'off_schedule'
+                        e['summary']['off'] += 1
+                elif fmt == 'remote' and not raw and skud <= 0:
+                    statuses = ['Удалённая работа']
+                    kind = 'remote'
+                    e['summary']['remote'] += 1
+                    e['summary']['work'] += 1
+                elif fmt == 'hybrid' and not raw and skud <= 0:
+                    statuses = ['Гибрид/удалённая работа']
+                    kind = 'remote'
+                    e['summary']['remote'] += 1
+                    e['summary']['work'] += 1
                 else:
-                    pe = rule['start'] + rv * 60
-                    plan = f"{fm(rule['start'])}–{fm(pe % 1440)}" + (' (+1 день)' if pe >= 1440 else '')
-                    if start is None or end is None:
-                        statuses = ['Проблема: нет полного интервала']
-                        kind = 'problem'
+                    e['summary']['work'] += 1
+                    if rule['start'] is None:
+                        statuses = ['Нераспознанный график']
+                        kind = 'unknown'
                         e['summary']['problems'] += 1
                     else:
-                        if start < rule['start'] - 10:
-                            statuses.append('Аномально ранний приход ' + fm(rule['start'] - start))
-                            e['summary']['anomaly'] += 1
-                        elif start > rule['start']:
-                            statuses.append('Опоздание ' + fm(start - rule['start']))
-                            e['summary']['late'] += 1
-                        elif start < rule['start']:
-                            statuses.append('Ранний приход ' + fm(rule['start'] - start))
-                        delta = end - pe
-                        if delta < 0:
-                            statuses.append('Ранний уход ' + fm(-delta))
-                            e['summary']['early'] += 1
-                        elif delta > 5:
-                            statuses.append('Поздний уход ' + fm(delta))
-                            e['summary']['late_leave'] += 1
-                        d = (skud - rv) * 60
-                        if d > 5:
-                            statuses.append('Отклонение длительности СКУД от РВ: +' + fm(d))
-                            e['summary']['above'] += skud - rv
-                        elif d < -5:
-                            statuses.append('Отклонение длительности СКУД от РВ: ' + fm(d))
-                            e['summary']['below'] += rv - skud
+                        pe = rule['start'] + rv * 60
+                        plan = f"{fm(rule['start'])}–{fm(pe % 1440)}" + (' (+1 день)' if pe >= 1440 else '')
+                        if start is None or end is None:
+                            statuses = ['Проблема: нет полного интервала']
+                            kind = 'problem'
+                            e['summary']['problems'] += 1
                         else:
-                            statuses.append('СКУД соответствует РВ')
+                            if start < rule['start'] - 10:
+                                statuses.append('Аномально ранний приход ' + fm(rule['start'] - start))
+                                e['summary']['anomaly'] += 1
+                            elif start > rule['start']:
+                                statuses.append('Опоздание ' + fm(start - rule['start']))
+                                e['summary']['late'] += 1
+                            elif start < rule['start']:
+                                statuses.append('Ранний приход ' + fm(rule['start'] - start))
+                            delta = end - pe
+                            if delta < 0:
+                                statuses.append('Ранний уход ' + fm(-delta))
+                                e['summary']['early'] += 1
+                            elif delta > 5:
+                                statuses.append('Поздний уход ' + fm(delta))
+                                e['summary']['late_leave'] += 1
+                            d = (skud - rv) * 60
+                            if d > 5:
+                                statuses.append('Отклонение длительности СКУД от РВ: +' + fm(d))
+                                e['summary']['above'] += skud - rv
+                            elif d < -5:
+                                statuses.append('Отклонение длительности СКУД от РВ: ' + fm(d))
+                                e['summary']['below'] += rv - skud
+                            else:
+                                statuses.append('СКУД соответствует РВ')
 
-            days.append({
-                'number': e['number'], 'name': e['name'], 'position': position,
-                'department': department, 'unit': unit,
-                'work_format': work_format, 'date': date,
-                'rv': rv, 'skud': skud, 'interval': txt(raw) or '—',
-                'plan': plan, 'statuses': statuses, 'kind': kind, 'm': m
-            })
-        employees.append(e)
-        i += 1
+                days.append({
+                    'number': e['number'], 'name': e['name'], 'position': position,
+                    'department': department, 'unit': unit,
+                    'work_format': work_format, 'date': date,
+                    'rv': rv, 'skud': skud, 'interval': txt(raw) or '—',
+                    'plan': plan, 'statuses': statuses, 'kind': kind, 'm': m
+                })
+
+            employees.append(e)
+
+            # Сбрасываем окно — следующего сотрудника ищем заново.
+            window = []
 
     wb.close()
     meta = {'year': year, 'month': month, 'period_key': f'{year:04d}-{month:02d}'}
@@ -504,7 +505,6 @@ def dashboard_data(emps, days, group_by='department', filter_val=''):
         r['name'] = name
         r['diff'] = r['fact'] - r['plan']
         rows.append(r)
-    # Сортировка: лучшие сверху (у кого больше переработка — тот выше)
     rows.sort(key=lambda r: (-r['diff'], r['name']))
     total = {'emp': sum(r['emp'] for r in rows), **{k: sum(r[k] for r in rows) for k in DKEYS}}
     total['diff'] = total['fact'] - total['plan']
@@ -598,9 +598,7 @@ def export_dynamics_xlsx(history_data, path, filter_dept='', filter_unit=''):
             emps = [e for e in emps if e.get('unit') == filter_unit]
             ids = {e['number'] for e in emps}
             days = [d for d in days if d['number'] in ids]
-        # Считаем итоги по отфильтрованным
         rows, total = dashboard_data(emps, days, group_by='department', filter_val='')
-        # Собираем total вручную (агрегация одной корзины)
         agg = {'emp': len(emps), **{k: 0 for k in DKEYS}}
         for x in days:
             m = x.get('m')
@@ -1131,7 +1129,6 @@ def build_page(tab, args):
         tab = 'dashboard_dept'
 
     if STATE['employees'] is None:
-        # Руководителю — заглушка, но не админ. Смотрим на путь
         if request.path.startswith('/admin') or request.path.startswith('/upload'):
             return TOP + admin_form() + BOTTOM
         return TOP + public_empty() + BOTTOM
@@ -1186,10 +1183,8 @@ def upload():
         STATE['days'] = days
         STATE['meta'] = meta
         STATE['filename'] = safe_name
-        # Сохраняем активный снапшот и историю
         save_state(emps, days, meta, safe_name)
         save_snapshot(emps, days, meta)
-        # Чистим старые экспорты
         for old in EXPORT_DIR.glob('*.xlsx'):
             try: old.unlink()
             except Exception: pass
@@ -1265,4 +1260,4 @@ def export_dynamics():
 # ---------------- Запуск ----------------
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)     
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
