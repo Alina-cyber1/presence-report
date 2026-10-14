@@ -81,7 +81,6 @@ def format_kind(v):
     return 'office'
 
 def parse_period(head_text):
-    """Из 'План/факт присутствия на рабочем месте, за Август 2026' -> (2026, 8)."""
     low = txt(head_text).lower().replace('ё', 'е')
     month = None
     for key, val in MONTHS_RU.items():
@@ -95,7 +94,6 @@ def parse_period(head_text):
     return year, month
 
 def is_employee_row(row):
-    """Проверяет, что строка содержит данные сотрудника."""
     if row is None: return False
     number = txt(row[1]) if len(row) > 1 else ''
     name = txt(row[3]) if len(row) > 3 else ''
@@ -141,7 +139,6 @@ def strict_day(rule, missing, start, end, rv, skud):
     return z
 
 def load_departments():
-    """Читает Справочник.xlsx -> {подразделение: департамент}."""
     path = BASE_DIR / 'Справочник.xlsx'
     if not path.exists():
         return {}
@@ -162,19 +159,11 @@ def load_departments():
         return {}
 
 def analyze(path):
-    """
-    Потоковый парсинг выгрузки. Возвращает (employees, days, meta).
-    meta = {'year': 2026, 'month': 8, 'period_key': '2026-08'}
-    Память O(1): не копим весь файл, храним только окно из 3 строк.
-    """
     DEPT_MAP = load_departments()
-
     wb = load_workbook(path, data_only=True, read_only=True, keep_links=False)
     ws = wb.active
-
     rows_iter = ws.iter_rows(values_only=True)
 
-    # --- 1. Ищем шапку: читаем первые до 11 строк ---
     year, month = datetime.now().year, datetime.now().month
     for idx, row in enumerate(rows_iter):
         joined = ' '.join(txt(c) for c in row[:15])
@@ -186,17 +175,11 @@ def analyze(path):
 
     employees = []
     days = []
-
-    # --- 2. Потоковый проход с окном из 3 строк ---
-    # Структура: строка сотрудника → пропуск → строка данных.
-    # Храним только последние 3 строки, не копим весь файл.
     window = []
     for row in rows_iter:
         window.append(row)
         if len(window) > 3:
             window.pop(0)
-
-        # Обрабатываем, когда в окне ровно 3 строки и первая — сотрудник
         if len(window) == 3 and is_employee_row(window[0]):
             emp_row = window[0]
             data_row = window[2]
@@ -227,7 +210,6 @@ def analyze(path):
                 }
             }
 
-            # --- обход дней ---
             for day in range(1, 32):
                 c = 49 + (day - 1) * 2
                 if c + 1 >= len(emp_row) or c + 1 >= len(data_row):
@@ -329,8 +311,6 @@ def analyze(path):
                 })
 
             employees.append(e)
-
-            # Сбрасываем окно — следующего сотрудника ищем заново.
             window = []
 
     wb.close()
@@ -368,6 +348,51 @@ DKEYS = ['plan', 'fact', 'late', 'early', 'late_leave', 'off', 'early_arr', 'rem
 def safe_filename(name):
     cleaned = re.sub(r'[\\/:*?"<>|]', '_', name).strip()
     return cleaned or 'export'
+
+# ---------------- Единый фильтр-бар ----------------
+def filter_bar(tab, emps, dept_sel='', unit_sel='', emp_sel='', show_employee=False):
+    """Единый блок фильтров: Департамент + Подразделение (+ Сотрудник)."""
+    dept_sel = str(dept_sel or '')
+    unit_sel = str(unit_sel or '')
+    emp_sel = str(emp_sel or '')
+
+    depts = sorted({e.get('department', NO_DEPT) for e in emps})
+    dept_opts = ''.join(
+        '<option value="' + esc(d) + '"' + (' selected' if d == dept_sel else '') + '>' +
+        esc(d) + '</option>' for d in depts
+    )
+    units_pool = [e for e in emps if not dept_sel or e.get('department') == dept_sel]
+    units = sorted({e.get('unit', NO_UNIT) for e in units_pool})
+    unit_opts = ''.join(
+        '<option value="' + esc(u) + '"' + (' selected' if u == unit_sel else '') + '>' +
+        esc(u) + '</option>' for u in units
+    )
+
+    emp_html = ''
+    if show_employee:
+        names = sorted({e['name'] for e in emps
+                        if (not dept_sel or e.get('department') == dept_sel)
+                        and (not unit_sel or e.get('unit') == unit_sel)})
+        name_opts = ''.join('<option value="' + esc(n) + '">' for n in names)
+        emp_html = (
+            '<label>Сотрудник</label>'
+            '<input list="names" name="employee" value="' + esc(emp_sel) + '" '
+            'placeholder="Начните вводить ФИО" autocomplete="off">'
+            '<datalist id="names">' + name_opts + '</datalist>'
+        )
+
+    return (
+        '<div class="card"><form method="get" action="/" class="select-row">'
+        '<input type="hidden" name="tab" value="' + esc(tab) + '">'
+        '<label>Департамент</label>'
+        '<select name="department"><option value="">Все</option>' + dept_opts + '</select>'
+        '<label>Подразделение</label>'
+        '<select name="unit"><option value="">Все</option>' + unit_opts + '</select>'
+        + emp_html +
+        '<button class="btn">Показать</button>'
+        '<a class="btn btn-ghost" href="/?tab=' + esc(tab) + '">Сбросить</a>'
+        '</form></div>'
+    )
 
 # ---------------- Экспорт выгрузки по сотрудникам ----------------
 def export_xlsx(emps, days, path):
@@ -470,29 +495,27 @@ def export_xlsx(emps, days, path):
     wb.save(path)
 
 # ---------------- Агрегация по департаментам / подразделениям ----------------
-def dashboard_data(emps, days, group_by='department', filter_val=''):
+def dashboard_data(emps, days, group_by='department', filter_dept='', filter_unit=''):
     """
     group_by: 'department' | 'unit'
-    filter_val: если group_by='unit' — фильтр по департаменту;
-                если group_by='department' — фильтр по департаменту (не используется)
+    filter_dept: фильтр по департаменту (пусто — все)
+    filter_unit: фильтр по подразделению (пусто — все)
     """
     agg = {}
     for e in emps:
-        if group_by == 'unit':
-            if filter_val and e.get('department') != filter_val:
-                continue
-            key = e.get('unit') or NO_UNIT
-        else:
-            key = e.get('department') or NO_DEPT
+        if filter_dept and e.get('department') != filter_dept:
+            continue
+        if filter_unit and e.get('unit') != filter_unit:
+            continue
+        key = (e.get('department') or NO_DEPT) if group_by == 'department' else (e.get('unit') or NO_UNIT)
         a = agg.setdefault(key, {'emp': 0, **{k: 0 for k in DKEYS}})
         a['emp'] += 1
     for x in days:
-        if group_by == 'unit':
-            if filter_val and x.get('department') != filter_val:
-                continue
-            key = x.get('unit') or NO_UNIT
-        else:
-            key = x.get('department') or NO_DEPT
+        if filter_dept and x.get('department') != filter_dept:
+            continue
+        if filter_unit and x.get('unit') != filter_unit:
+            continue
+        key = (x.get('department') or NO_DEPT) if group_by == 'department' else (x.get('unit') or NO_UNIT)
         a = agg.get(key)
         m = x.get('m')
         if a is None or not m:
@@ -511,8 +534,8 @@ def dashboard_data(emps, days, group_by='department', filter_val=''):
     return rows, total
 
 # ---------------- Экспорт дашборда ----------------
-def export_dashboard_xlsx(emps, days, group_by, filter_val, path, sheet_name):
-    rows, total = dashboard_data(emps, days, group_by, filter_val)
+def export_dashboard_xlsx(emps, days, group_by, filter_dept, filter_unit, path, sheet_name):
+    rows, total = dashboard_data(emps, days, group_by, filter_dept, filter_unit)
     wb = Workbook()
     ws = wb.active
     ws.title = sheet_name
@@ -559,10 +582,6 @@ def export_dashboard_xlsx(emps, days, group_by, filter_val, path, sheet_name):
 
 # ---------------- Экспорт динамики ----------------
 def export_dynamics_xlsx(history_data, path, filter_dept='', filter_unit=''):
-    """
-    history_data: список {'meta': {...}, 'employees': [...], 'days': [...]},
-                  отсортированный по периоду
-    """
     wb = Workbook()
     ws = wb.active
     ws.title = 'Динамика'
@@ -598,7 +617,6 @@ def export_dynamics_xlsx(history_data, path, filter_dept='', filter_unit=''):
             emps = [e for e in emps if e.get('unit') == filter_unit]
             ids = {e['number'] for e in emps}
             days = [d for d in days if d['number'] in ids]
-        rows, total = dashboard_data(emps, days, group_by='department', filter_val='')
         agg = {'emp': len(emps), **{k: 0 for k in DKEYS}}
         for x in days:
             m = x.get('m')
@@ -632,7 +650,6 @@ def snapshot_path(period_key):
     return HISTORY_DIR / f'{period_key}.pkl'
 
 def save_snapshot(employees, days, meta):
-    """Сохраняет снапшот в config/history/YYYY-MM.pkl."""
     try:
         with open(snapshot_path(meta['period_key']), 'wb') as f:
             pickle.dump({'meta': meta, 'employees': employees, 'days': days}, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -650,7 +667,6 @@ def load_snapshot(period_key):
         return None
 
 def list_history():
-    """Возвращает список period_key (YYYY-MM), отсортированный по возрастанию."""
     keys = []
     for p in HISTORY_DIR.glob('*.pkl'):
         name = p.stem
@@ -660,7 +676,6 @@ def list_history():
     return keys
 
 def load_all_history():
-    """Возвращает список снапшотов, отсортированных по периоду."""
     result = []
     for key in list_history():
         snap = load_snapshot(key)
@@ -669,7 +684,6 @@ def load_all_history():
     return result
 
 def save_state(employees, days, meta, filename):
-    """Сохраняет активный снапшот в config/state.pkl."""
     try:
         with open(STATE_FILE, 'wb') as f:
             pickle.dump({
@@ -680,7 +694,6 @@ def save_state(employees, days, meta, filename):
         print(f'[save_state] error: {ex}')
 
 def load_state():
-    """Читает config/state.pkl, если он есть."""
     if not STATE_FILE.exists():
         return None
     try:
@@ -742,14 +755,12 @@ TOP = ('<!doctype html><html lang="ru"><head><meta charset="utf-8">'
        '<style>' + CSS + '</style></head><body>')
 BOTTOM = '</body></html>'
 
-# ---------------- Глобальное состояние (в памяти + на диске) ----------------
 STATE = {
     'employees': None, 'days': None, 'meta': None,
     'filename': None, 'status': 'idle', 'error': None
 }
 
 def load_state_to_memory():
-    """Читает state.pkl при старте процесса."""
     saved = load_state()
     if saved:
         STATE['employees'] = saved.get('employees')
@@ -757,10 +768,8 @@ def load_state_to_memory():
         STATE['meta'] = saved.get('meta')
         STATE['filename'] = saved.get('filename')
 
-# Вызываем на старте
 load_state_to_memory()
 
-# ---------------- Страница /admin (для вас) ----------------
 def admin_form():
     if STATE['status'] == 'processing':
         note = '<p class="muted">⏳ Файл обрабатывается, подождите несколько секунд.</p>'
@@ -789,7 +798,6 @@ def admin_form():
             '<button class="btn">Обработать и опубликовать</button></form>'
             + note + '</div>' + hist_html)
 
-# ---------------- Страница / для руководителей ----------------
 def public_empty():
     return ('<h1>Анализ присутствия сотрудников</h1>'
             '<p class="subtitle">Дашборд для руководителей</p>'
@@ -797,22 +805,25 @@ def public_empty():
             'Отчёт пока не опубликован. Обратитесь к ответственному за обновление.'
             '</div></div>')
 
-# ---------------- Табы ----------------
-def tabs_bar(tab):
+def tabs_bar(tab, dept='', unit=''):
     items = [
         ('dashboard_dept', 'Дашборд по департаментам'),
         ('dashboard_unit', 'Дашборд по подразделениям'),
         ('employees', 'Анализ по сотрудникам'),
         ('dynamics', 'Динамика по периодам'),
     ]
+    # Сохраняем фильтры при переключении вкладок
+    q = []
+    if dept: q.append('department=' + esc(dept))
+    if unit: q.append('unit=' + esc(unit))
+    qs = ('&' + '&'.join(q)) if q else ''
     out = '<div class="tabs">'
     for key, label in items:
         cls = 'tab active' if key == tab else 'tab'
-        out += f'<a class="{cls}" href="/?tab={key}">{label}</a>'
+        out += f'<a class="{cls}" href="/?tab={key}{qs}">{label}</a>'
     out += '</div>'
     return out
 
-# ---------------- Рендер таблицы сотрудников ----------------
 def render_employees(emps, days, selected, dept_selected, unit_selected):
     selected = str(selected or '')
     dept_selected = str(dept_selected or '')
@@ -827,18 +838,6 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
     ids = {e['number'] for e in es}
     ds = [d for d in days if d['number'] in ids]
 
-    all_names = sorted({e['name'] for e in emps})
-    name_opts = ''.join('<option value="' + esc(n) + '">' for n in all_names)
-    all_depts = sorted({e.get('department', NO_DEPT) for e in emps})
-    dept_opts = ''.join('<option value="' + esc(d) + '"' +
-                        (' selected' if d == dept_selected else '') + '>' + esc(d) + '</option>'
-                        for d in all_depts)
-    all_units = sorted({e.get('unit', NO_UNIT) for e in emps
-                        if not dept_selected or e.get('department') == dept_selected})
-    unit_opts = ''.join('<option value="' + esc(u) + '"' +
-                        (' selected' if u == unit_selected else '') + '>' + esc(u) + '</option>'
-                        for u in all_units)
-
     title = selected if selected else 'Все сотрудники'
     if dept_selected: title += ' — ' + dept_selected
     if unit_selected: title += ' / ' + unit_selected
@@ -849,19 +848,11 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
     if unit_selected: filter_query += 'unit=' + esc(unit_selected) + '&'
     filter_query = filter_query.rstrip('&')
 
-    filters = ('<div class="card"><form method="get" action="/" class="select-row">'
-               '<input type="hidden" name="tab" value="employees">'
-               '<label>Сотрудник</label>'
-               '<input list="names" name="employee" value="' + esc(selected) + '" '
-               'placeholder="Начните вводить ФИО" autocomplete="off">'
-               '<datalist id="names">' + name_opts + '</datalist>'
-               '<label>Департамент</label>'
-               '<select name="department"><option value="">Все</option>' + dept_opts + '</select>'
-               '<label>Подразделение</label>'
-               '<select name="unit"><option value="">Все</option>' + unit_opts + '</select>'
-               '<button class="btn">Показать</button>'
-               '<a class="btn btn-ghost" href="/?tab=employees">Сбросить</a>'
-               '</form></div>')
+    filters = filter_bar('employees', emps,
+                         dept_sel=dept_selected,
+                         unit_sel=unit_selected,
+                         emp_sel=selected,
+                         show_employee=True)
 
     export_btns = '<div class="stat"><a class="btn btn-green" href="/export/full">Export Excel (полная выгрузка)</a></div>'
     if selected or dept_selected or unit_selected:
@@ -938,38 +929,27 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
             '<th>Интервал</th><th>План</th><th>Статусы</th></tr>'
             + ''.join(dr) + '</table></div></div>')
 
-# ---------------- Рендер дашборда ----------------
-def render_dashboard(emps, days, group_by, filter_val=''):
-    if group_by == 'department':
-        filter_val = ''
-    rows, t = dashboard_data(emps, days, group_by, filter_val)
+def render_dashboard(emps, days, group_by, filter_dept='', filter_unit=''):
+    rows, t = dashboard_data(emps, days, group_by, filter_dept, filter_unit)
 
     def sgn(v):
         return 'neg' if round(v) < 0 else ('pos' if round(v) > 0 else '')
 
-    if group_by == 'department':
-        form = ''
-        title = 'Дашборд по департаментам'
-        subtitle = 'Департаменты отсортированы по разнице план/факт: лучшие сверху'
-    else:
-        depts = sorted({e.get('department', NO_DEPT) for e in emps})
-        opts = ''.join('<option value="' + esc(d) + '"' +
-                       (' selected' if d == filter_val else '') + '>' + esc(d) + '</option>'
-                       for d in depts)
-        form = ('<div class="card"><form method="get" action="/" class="select-row">'
-                '<input type="hidden" name="tab" value="dashboard_unit">'
-                '<label>Департамент</label>'
-                '<select name="department"><option value="">Все департаменты</option>' +
-                opts + '</select>'
-                '<button class="btn">Показать</button>'
-                '<a class="btn btn-ghost" href="/?tab=dashboard_unit">Сбросить</a>'
-                '</form></div>')
-        title = 'Дашборд по подразделениям'
-        subtitle = ('Подразделения' + (f' департамента «{filter_val}»' if filter_val else '') +
-                    ' отсортированы по разнице план/факт: лучшие сверху')
+    tab_key = 'dashboard_dept' if group_by == 'department' else 'dashboard_unit'
+    title = 'Дашборд по департаментам' if group_by == 'department' else 'Дашборд по подразделениям'
+    subtitle = ('Департаменты' if group_by == 'department' else 'Подразделения') + \
+               (f' департамента «{filter_dept}»' if filter_dept else '') + \
+               (f' · {filter_unit}' if filter_unit else '') + \
+               ' отсортированы по разнице план/факт: лучшие сверху'
 
+    form = filter_bar(tab_key, emps, dept_sel=filter_dept, unit_sel=filter_unit)
+
+    q = []
+    if filter_dept: q.append('department=' + esc(filter_dept))
+    if filter_unit: q.append('unit=' + esc(filter_unit))
+    qs = ('?' + '&'.join(q)) if q else ''
     export_url = ('/export/dashboard_dept' if group_by == 'department'
-                  else '/export/dashboard_unit?department=' + esc(filter_val))
+                  else '/export/dashboard_unit') + qs
 
     cards = ('<div class="card"><div class="grid">'
              '<div class="stat"><div class="metric">' + str(len(rows)) + '</div>'
@@ -1016,7 +996,6 @@ def render_dashboard(emps, days, group_by, filter_val=''):
              note + '</div>')
     return form + cards + table
 
-# ---------------- Рендер динамики ----------------
 def render_dynamics(filter_dept='', filter_unit=''):
     history = load_all_history()
     if not history:
@@ -1024,25 +1003,8 @@ def render_dynamics(filter_dept='', filter_unit=''):
                 '<p class="muted">Пока нет загруженных периодов. Загрузите файлы за несколько месяцев '
                 'на странице <a href="/admin">/admin</a> — они появятся здесь.</p></div>')
 
-    all_depts = sorted({e.get('department', NO_DEPT) for s in history for e in s['employees']})
-    all_units = sorted({e.get('unit', NO_UNIT) for s in history for e in s['employees']})
-
-    dept_opts = ''.join('<option value="' + esc(d) + '"' +
-                        (' selected' if d == filter_dept else '') + '>' + esc(d) + '</option>'
-                        for d in all_depts)
-    unit_opts = ''.join('<option value="' + esc(u) + '"' +
-                        (' selected' if u == filter_unit else '') + '>' + esc(u) + '</option>'
-                        for u in all_units)
-
-    form = ('<div class="card"><form method="get" action="/" class="select-row">'
-            '<input type="hidden" name="tab" value="dynamics">'
-            '<label>Департамент</label>'
-            '<select name="department"><option value="">Все</option>' + dept_opts + '</select>'
-            '<label>Подразделение</label>'
-            '<select name="unit"><option value="">Все</option>' + unit_opts + '</select>'
-            '<button class="btn">Показать</button>'
-            '<a class="btn btn-ghost" href="/?tab=dynamics">Сбросить</a>'
-            '</form></div>')
+    all_emps = [e for s in history for e in s['employees']]
+    form = filter_bar('dynamics', all_emps, dept_sel=filter_dept, unit_sel=filter_unit)
 
     def period_label(meta):
         m = {1: 'Январь', 2: 'Февраль', 3: 'Март', 4: 'Апрель', 5: 'Май', 6: 'Июнь',
@@ -1122,7 +1084,6 @@ def render_dynamics(filter_dept='', filter_unit=''):
              '">Export Excel (Динамика)</a></p></div>')
     return form + table
 
-# ---------------- Сборка страницы ----------------
 def build_page(tab, args):
     tab = tab or 'dashboard_dept'
     if tab not in ('dashboard_dept', 'dashboard_unit', 'employees', 'dynamics'):
@@ -1133,23 +1094,22 @@ def build_page(tab, args):
             return TOP + admin_form() + BOTTOM
         return TOP + public_empty() + BOTTOM
 
+    dept = args.get('department', '')
+    unit = args.get('unit', '')
+
     if tab == 'dashboard_dept':
-        body = render_dashboard(STATE['employees'], STATE['days'], 'department', '')
+        body = render_dashboard(STATE['employees'], STATE['days'], 'department', dept, unit)
     elif tab == 'dashboard_unit':
-        body = render_dashboard(STATE['employees'], STATE['days'], 'unit',
-                                args.get('department', ''))
+        body = render_dashboard(STATE['employees'], STATE['days'], 'unit', dept, unit)
     elif tab == 'employees':
         body = render_employees(STATE['employees'], STATE['days'],
-                                args.get('employee', ''),
-                                args.get('department', ''),
-                                args.get('unit', ''))
-    else:  # dynamics
-        body = render_dynamics(args.get('department', ''), args.get('unit', ''))
+                                args.get('employee', ''), dept, unit)
+    else:
+        body = render_dynamics(dept, unit)
 
     header = admin_form() if request.path.startswith('/admin') else ''
-    return TOP + header + tabs_bar(tab) + body + BOTTOM
+    return TOP + header + tabs_bar(tab, dept, unit) + body + BOTTOM
 
-# ---------------- Роутинг ----------------
 @app.route('/', methods=['GET'])
 def index():
     return build_page(request.args.get('tab', 'dashboard_dept'), request.args)
@@ -1230,9 +1190,11 @@ def export_filtered():
 def export_dashboard_dept():
     if STATE['employees'] is None:
         return redirect('/')
+    dept = request.args.get('department', '')
+    unit = request.args.get('unit', '')
     target = EXPORT_DIR / 'dashboard_dept.xlsx'
-    export_dashboard_xlsx(STATE['employees'], STATE['days'], 'department', '',
-                          target, 'Дашборд по департаментам')
+    export_dashboard_xlsx(STATE['employees'], STATE['days'], 'department',
+                          dept, unit, target, 'Дашборд по департаментам')
     return send_file(target, as_attachment=True, download_name='Дашборд по департаментам.xlsx')
 
 @app.route('/export/dashboard_unit')
@@ -1240,10 +1202,13 @@ def export_dashboard_unit():
     if STATE['employees'] is None:
         return redirect('/')
     dept = request.args.get('department', '')
+    unit = request.args.get('unit', '')
     target = EXPORT_DIR / 'dashboard_unit.xlsx'
-    export_dashboard_xlsx(STATE['employees'], STATE['days'], 'unit', dept,
-                          target, 'Дашборд по подразделениям')
-    fname = 'Дашборд по подразделениям' + (f' - {safe_filename(dept)}' if dept else '')
+    export_dashboard_xlsx(STATE['employees'], STATE['days'], 'unit',
+                          dept, unit, target, 'Дашборд по подразделениям')
+    fname = 'Дашборд по подразделениям'
+    if dept: fname += ' - ' + safe_filename(dept)
+    if unit: fname += ' - ' + safe_filename(unit)
     return send_file(target, as_attachment=True, download_name=fname + '.xlsx')
 
 @app.route('/export/dynamics')
@@ -1257,7 +1222,6 @@ def export_dynamics():
     export_dynamics_xlsx(history, target, dept, unit)
     return send_file(target, as_attachment=True, download_name='Динамика по периодам.xlsx')
 
-# ---------------- Запуск ----------------
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
