@@ -345,13 +345,26 @@ DASH_DESCRIPTIONS = [
 
 DKEYS = ['plan', 'fact', 'late', 'early', 'late_leave', 'off', 'early_arr', 'remote_rv', 'free']
 
+# Определения колонок для чекбоксов «Показывать показатели»
+COL_TOGGLES = [
+    ('plan',      'План (РВ), ч'),
+    ('fact',      'Факт, ч'),
+    ('diff',      'Количество часов недоработки по графику'),
+    ('late',      'Опоздания, ч'),
+    ('early',     'Ранние уходы, ч'),
+    ('off',       'Вне графика, ч'),
+    ('early_arr', 'Ранний приход, ч (справочно)'),
+    ('remote_rv', 'Потенциально удалённые, ч'),
+    ('free',      'Свободный график, ч'),
+]
+ALL_COLS = {k for k, _ in COL_TOGGLES}
+
 def safe_filename(name):
     cleaned = re.sub(r'[\\/:*?"<>|]', '_', name).strip()
     return cleaned or 'export'
 
 # ---------------- Единый фильтр-бар ----------------
 def filter_bar(tab, emps, dept_sel='', unit_sel='', emp_sel='', show_employee=False):
-    """Единый блок фильтров: Департамент + Подразделение (+ Сотрудник)."""
     dept_sel = str(dept_sel or '')
     unit_sel = str(unit_sel or '')
     emp_sel = str(emp_sel or '')
@@ -393,6 +406,96 @@ def filter_bar(tab, emps, dept_sel='', unit_sel='', emp_sel='', show_employee=Fa
         '<a class="btn btn-ghost" href="/?tab=' + esc(tab) + '">Сбросить</a>'
         '</form></div>'
     )
+
+# ---------------- Чекбоксы колонок ----------------
+def cols_state(args):
+    """Активные колонки. По умолчанию все."""
+    raw = args.get('cols', '')
+    if not raw:
+        return set(ALL_COLS)
+    return {k for k in raw.split(',') if k in ALL_COLS}
+
+def render_cols_form(tab, active, dept='', unit=''):
+    boxes = []
+    for key, label in COL_TOGGLES:
+        checked = ' checked' if key in active else ''
+        boxes.append(
+            '<label><input type="checkbox" name="col_' + key + '" value="1"' + checked + '>'
+            + esc(label) + '</label>'
+        )
+    return (
+        '<div class="card">'
+        '<h2>Показывать показатели</h2>'
+        '<form method="get" action="/" class="cols-form">'
+        '<input type="hidden" name="tab" value="' + esc(tab) + '">'
+        '<input type="hidden" name="department" value="' + esc(dept) + '">'
+        '<input type="hidden" name="unit" value="' + esc(unit) + '">'
+        + ''.join(boxes) +
+        '<button class="btn" type="submit">Применить и сохранить</button>'
+        '</form></div>'
+    )
+
+def collect_cols(args):
+    """
+    Если ни один checkbox не был отмечен (нет ни одного col_* в args) — все активны.
+    Если есть хотя бы один — активны только отмеченные.
+    """
+    any_marker = any(k.startswith('col_') for k in args.keys())
+    if not any_marker:
+        return set(ALL_COLS)
+    active = set()
+    for key, _ in COL_TOGGLES:
+        if args.get('col_' + key):
+            active.add(key)
+    return active
+
+def cols_to_url(active):
+    """active: set колонок. Возвращает строку для ?cols=... или '' если все."""
+    if active == ALL_COLS:
+        return ''
+    return ','.join(sorted(active))
+
+# ---------------- Круговая диаграмма ----------------
+def render_pie(title, parts):
+    """
+    parts: список (label, value_minutes, color)
+    Рисует круговую диаграмму через SVG + легенду. Без JS.
+    """
+    total = sum(v for _, v, _ in parts) or 1
+    R = 60
+    C = 2 * 3.14159265 * R
+    svg_parts = []
+    offset = 0.0
+    for _, v, color in parts:
+        frac = (v / total) if total else 0
+        dash = C * frac
+        svg_parts.append(
+            '<circle r="' + str(R) + '" cx="80" cy="80" fill="transparent" '
+            'stroke="' + color + '" stroke-width="28" '
+            'stroke-dasharray="' + f'{dash:.2f} {C - dash:.2f}' + '" '
+            'stroke-dashoffset="' + f'{-offset:.2f}' + '" '
+            'transform="rotate(-90 80 80)"></circle>'
+        )
+        offset += dash
+    svg = ('<svg width="160" height="160" viewBox="0 0 160 160">'
+           + ''.join(svg_parts) +
+           '<text x="80" y="78" text-anchor="middle" font-size="13" fill="#6b7684">Всего</text>'
+           '<text x="80" y="98" text-anchor="middle" font-size="16" font-weight="700" fill="#1b2430">'
+           + fm(total) + '</text>'
+           '</svg>')
+
+    legend = []
+    for label, v, color in parts:
+        pct = (v / total * 100) if total else 0
+        legend.append(
+            '<div><span class="dot" style="background:' + color + '"></span>' +
+            esc(label) + '<span class="val">' + fm(v) + ' · ' +
+            f'{pct:.1f}%</span></div>'
+        )
+    return ('<div class="card"><h2>' + esc(title) + '</h2>'
+            '<div class="pie">' + svg + '<div class="pie-legend">' +
+            ''.join(legend) + '</div></div>'
+            '<p class="note">График отражает только выбранные категории.</p></div>')
 
 # ---------------- Экспорт выгрузки по сотрудникам ----------------
 def export_xlsx(emps, days, path):
@@ -496,11 +599,6 @@ def export_xlsx(emps, days, path):
 
 # ---------------- Агрегация по департаментам / подразделениям ----------------
 def dashboard_data(emps, days, group_by='department', filter_dept='', filter_unit=''):
-    """
-    group_by: 'department' | 'unit'
-    filter_dept: фильтр по департаменту (пусто — все)
-    filter_unit: фильтр по подразделению (пусто — все)
-    """
     agg = {}
     for e in emps:
         if filter_dept and e.get('department') != filter_dept:
@@ -747,6 +845,15 @@ CSS = (
     '.note{color:var(--muted);font-size:12px;margin:12px 0 0;line-height:1.5}'
     '.notice{background:#fff6df;border:1px solid #f0c34a;border-radius:10px;padding:12px 16px;margin:12px 0;color:#8a5a00;font-size:13px}'
     '.err{background:#fdecec;border:1px solid #f0b0b0;border-radius:10px;padding:12px 16px;margin:12px 0;color:#b42318;font-size:13px}'
+    '.cols-form{display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:4px 0 0;'
+    'font-size:13px;color:var(--ink)}'
+    '.cols-form label{display:flex;gap:6px;align-items:center;font-weight:500}'
+    '.cols-form input[type=checkbox]{margin:0;width:15px;height:15px}'
+    '.pie{display:flex;gap:24px;align-items:center;flex-wrap:wrap}'
+    '.pie svg{flex:0 0 auto;display:block}'
+    '.pie-legend{font-size:13px;line-height:1.9}'
+    '.pie-legend .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px;vertical-align:middle}'
+    '.pie-legend .val{margin-left:8px;color:var(--muted)}'
 )
 
 TOP = ('<!doctype html><html lang="ru"><head><meta charset="utf-8">'
@@ -805,17 +912,17 @@ def public_empty():
             'Отчёт пока не опубликован. Обратитесь к ответственному за обновление.'
             '</div></div>')
 
-def tabs_bar(tab, dept='', unit=''):
+def tabs_bar(tab, dept='', unit='', cols=''):
     items = [
         ('dashboard_dept', 'Дашборд по департаментам'),
         ('dashboard_unit', 'Дашборд по подразделениям'),
         ('employees', 'Анализ по сотрудникам'),
         ('dynamics', 'Динамика по периодам'),
     ]
-    # Сохраняем фильтры при переключении вкладок
     q = []
     if dept: q.append('department=' + esc(dept))
     if unit: q.append('unit=' + esc(unit))
+    if cols: q.append('cols=' + esc(cols))
     qs = ('&' + '&'.join(q)) if q else ''
     out = '<div class="tabs">'
     for key, label in items:
@@ -929,8 +1036,11 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
             '<th>Интервал</th><th>План</th><th>Статусы</th></tr>'
             + ''.join(dr) + '</table></div></div>')
 
-def render_dashboard(emps, days, group_by, filter_dept='', filter_unit=''):
+# ---------------- Рендер дашборда (с чекбоксами колонок и диаграммой) ----------------
+def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', active_cols=None):
     rows, t = dashboard_data(emps, days, group_by, filter_dept, filter_unit)
+    if active_cols is None:
+        active_cols = set(ALL_COLS)
 
     def sgn(v):
         return 'neg' if round(v) < 0 else ('pos' if round(v) > 0 else '')
@@ -943,10 +1053,13 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit=''):
                ' отсортированы по разнице план/факт: лучшие сверху'
 
     form = filter_bar(tab_key, emps, dept_sel=filter_dept, unit_sel=filter_unit)
+    cols_form = render_cols_form(tab_key, active_cols, dept=filter_dept, unit=filter_unit)
 
     q = []
     if filter_dept: q.append('department=' + esc(filter_dept))
     if filter_unit: q.append('unit=' + esc(filter_unit))
+    cols_str = cols_to_url(active_cols)
+    if cols_str: q.append('cols=' + esc(cols_str))
     qs = ('?' + '&'.join(q)) if q else ''
     export_url = ('/export/dashboard_dept' if group_by == 'department'
                   else '/export/dashboard_unit') + qs
@@ -963,38 +1076,54 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit=''):
              '<div class="stat"><a class="btn btn-green" href="' + export_url +
              '">Export Excel</a></div></div></div>')
 
-    head = ('<tr><th>' + ('Департамент' if group_by == 'department' else 'Подразделение') + '</th>'
-            '<th>Сотрудники</th><th>План (РВ), ч</th><th>Факт, ч</th>'
-            '<th>Разница, ч</th><th>Опоздания, ч</th><th>Ранние уходы, ч</th>'
-            '<th>Поздние уходы, ч</th><th>Вне графика, ч</th>'
-            '<th>Ранний приход, ч</th><th>Потенц. удалённые, ч</th>'
-            '<th>Свободный график, ч</th></tr>')
+    # Заголовки таблицы: базовые + выбранные колонки
+    head_cells = ['<th>' + ('Департамент' if group_by == 'department' else 'Подразделение') + '</th>']
+    head_cells.append('<th>Сотрудники</th>')
+    col_titles = {
+        'plan': 'План (РВ), ч', 'fact': 'Факт, ч', 'diff': 'Разница, ч',
+        'late': 'Опоздания, ч', 'early': 'Ранние уходы, ч',
+        'late_leave': 'Поздние уходы, ч', 'off': 'Вне графика, ч',
+        'early_arr': 'Ранний приход, ч', 'remote_rv': 'Потенц. удалённые, ч',
+        'free': 'Свободный график, ч',
+    }
+    for k, _ in COL_TOGGLES:
+        if k in active_cols:
+            head_cells.append('<th>' + col_titles.get(k, k) + '</th>')
+    head = '<tr>' + ''.join(head_cells) + '</tr>'
 
     def line(label, r, cls=''):
-        return ('<tr class="' + cls + '">'
-                '<td class="name">' + esc(label) + '</td>'
-                '<td>' + str(r['emp']) + '</td>'
-                '<td>' + fm(r['plan']) + '</td>'
-                '<td>' + fm(r['fact']) + '</td>'
-                '<td class="' + sgn(r['diff']) + ' strong">' + fsigned(r['diff']) + '</td>'
-                '<td>' + fm(r['late']) + '</td>'
-                '<td>' + fm(r['early']) + '</td>'
-                '<td>' + fm(r['late_leave']) + '</td>'
-                '<td>' + fm(r['off']) + '</td>'
-                '<td class="grey">' + fm(r['early_arr']) + '</td>'
-                '<td class="grey">' + fm(r['remote_rv']) + '</td>'
-                '<td class="grey">' + fm(r['free']) + '</td></tr>')
+        cells = ['<td class="name">' + esc(label) + '</td>',
+                 '<td>' + str(r['emp']) + '</td>']
+        for k, _ in COL_TOGGLES:
+            if k not in active_cols:
+                continue
+            if k == 'diff':
+                cells.append('<td class="' + sgn(r['diff']) + ' strong">' + fsigned(r['diff']) + '</td>')
+            elif k in ('early_arr', 'remote_rv', 'free'):
+                cells.append('<td class="grey">' + fm(r[k]) + '</td>')
+            else:
+                cells.append('<td>' + fm(r[k]) + '</td>')
+        return '<tr class="' + cls + '">' + ''.join(cells) + '</tr>'
 
     body = ''.join(line(r['name'], r) for r in rows) + line('ИТОГО', t, 'total')
     note = ('<p class="note">Расчёт без допусков: любое отклонение считается с первой минуты. '
             'Время раннего прихода в факт не входит. Дни, где РВ>0, но нет ни интервала, ни СКУД, '
             'считаются потенциально удалёнными и в план/факт не входят. '
             'Часы показаны в формате ЧЧ:ММ.</p>')
+
+    # Круговая диаграмма по итогу
+    pie_parts = [
+        ('Опоздания',    t.get('late', 0),  '#e57373'),
+        ('Ранние уходы', t.get('early', 0), '#f0b24a'),
+        ('Вне графика',  t.get('off', 0),   '#7c8cf0'),
+    ]
+    pie_html = render_pie('Структура отклонений', pie_parts)
+
     table = ('<div class="card"><h2>' + esc(title) + '</h2>'
              '<p class="muted">' + esc(subtitle) + '</p>'
              '<div class="wrap"><table>' + head + body + '</table></div>' +
              note + '</div>')
-    return form + cards + table
+    return form + cols_form + cards + pie_html + table
 
 def render_dynamics(filter_dept='', filter_unit=''):
     history = load_all_history()
@@ -1096,11 +1225,15 @@ def build_page(tab, args):
 
     dept = args.get('department', '')
     unit = args.get('unit', '')
+    active_cols = collect_cols(args)
+    cols_str = cols_to_url(active_cols)
 
     if tab == 'dashboard_dept':
-        body = render_dashboard(STATE['employees'], STATE['days'], 'department', dept, unit)
+        body = render_dashboard(STATE['employees'], STATE['days'], 'department',
+                                dept, unit, active_cols=active_cols)
     elif tab == 'dashboard_unit':
-        body = render_dashboard(STATE['employees'], STATE['days'], 'unit', dept, unit)
+        body = render_dashboard(STATE['employees'], STATE['days'], 'unit',
+                                dept, unit, active_cols=active_cols)
     elif tab == 'employees':
         body = render_employees(STATE['employees'], STATE['days'],
                                 args.get('employee', ''), dept, unit)
@@ -1108,7 +1241,7 @@ def build_page(tab, args):
         body = render_dynamics(dept, unit)
 
     header = admin_form() if request.path.startswith('/admin') else ''
-    return TOP + header + tabs_bar(tab, dept, unit) + body + BOTTOM
+    return TOP + header + tabs_bar(tab, dept, unit, cols_str) + body + BOTTOM
 
 @app.route('/', methods=['GET'])
 def index():
