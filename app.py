@@ -94,10 +94,17 @@ def parse_period(head_text):
     return year, month
 
 def is_employee_row(row):
+    """
+    В новой структуре выгрузки:
+    A (0) — Подразделение
+    B (1) — № (порядковый)
+    C (2) — Сотрудник (ФИО)
+    D (3) — Табельный номер (0000-XXXXX)
+    """
     if row is None: return False
     number = txt(row[1]) if len(row) > 1 else ''
-    name = txt(row[3]) if len(row) > 3 else ''
-    personnel = txt(row[4]) if len(row) > 4 else ''
+    name = txt(row[2]) if len(row) > 2 else ''
+    personnel = txt(row[3]) if len(row) > 3 else ''
     return bool(re.fullmatch(r'\d+', number) and name and name.lower() != 'сотрудник'
                 and re.fullmatch(r'\d{4}-\d{5}', personnel))
 
@@ -139,6 +146,10 @@ def strict_day(rule, missing, start, end, rv, skud):
     return z
 
 def load_departments():
+    """
+    Читает Справочник.xlsx (лист «Справочник»).
+    Возвращает словарь {Наименование подразделения (колонка B): Департамент (колонка F)}.
+    """
     path = BASE_DIR / 'Справочник.xlsx'
     if not path.exists():
         return {}
@@ -159,11 +170,40 @@ def load_departments():
         return {}
 
 def analyze(path):
+    """
+    Разбор выгрузки. Структура колонок (новая):
+    A (0)  — Подразделение
+    B (1)  — № (порядковый)
+    C (2)  — Сотрудник (ФИО)
+    D (3)  — Табельный номер
+    E (4)  — Должность
+    F (5)  — Дата приёма
+    G (6)  — Дата увольнения
+    H (7)  — Формат работы
+    I (8)  — График
+    J (9)  — Больничные
+    ...
+    AW (48) — 1-е число (РВ)
+    AX (49) — 1-е число (СКУД)
+    ...
+    """
+    # ---- КОНСТАНТЫ ИНДЕКСОВ КОЛОНОК (0-based) ----
+    COL_UNIT      = 0   # A: Подразделение
+    COL_NUMBER    = 1   # B: №
+    COL_NAME      = 2   # C: ФИО
+    COL_PERSONNEL = 3   # D: Табельный
+    COL_POSITION  = 4   # E: Должность
+    COL_FORMAT    = 7   # H: Формат работы
+    COL_SCHEDULE  = 8   # I: График
+    COL_DAY_START = 48  # AW: первое число (РВ)
+    COL_DAY_STEP  = 2   # шаг между числами
+
     DEPT_MAP = load_departments()
     wb = load_workbook(path, data_only=True, read_only=True, keep_links=False)
     ws = wb.active
     rows_iter = ws.iter_rows(values_only=True)
 
+    # Определяем период (год, месяц)
     year, month = datetime.now().year, datetime.now().month
     for idx, row in enumerate(rows_iter):
         joined = ' '.join(txt(c) for c in row[:15])
@@ -184,22 +224,31 @@ def analyze(path):
             emp_row = window[0]
             data_row = window[2]
 
-            unit = txt(emp_row[2]) if len(emp_row) > 2 else ''
-            department = DEPT_MAP.get(unit, unit) if unit else NO_DEPT
-            position = txt(emp_row[5]) if len(emp_row) > 5 else ''
-            work_format = txt(emp_row[8]) if len(emp_row) > 8 else ''
+            # --- Подразделение и департамент ---
+            unit = txt(emp_row[COL_UNIT]) if len(emp_row) > COL_UNIT else ''
+            # Департамент ВСЕГДА из справочника; fallback — подразделение
+            department = DEPT_MAP.get(unit, '') or unit or NO_DEPT
+
+            # --- Остальные поля ---
+            number    = txt(emp_row[COL_NUMBER])    if len(emp_row) > COL_NUMBER    else ''
+            name      = txt(emp_row[COL_NAME])      if len(emp_row) > COL_NAME      else ''
+            personnel = txt(emp_row[COL_PERSONNEL]) if len(emp_row) > COL_PERSONNEL else ''
+            position  = txt(emp_row[COL_POSITION])  if len(emp_row) > COL_POSITION  else ''
+            work_format = txt(emp_row[COL_FORMAT])  if len(emp_row) > COL_FORMAT    else ''
             if not work_format:
                 work_format = 'Не указан'
             fmt = format_kind(work_format)
-            raw_schedule = txt(emp_row[9]) if len(emp_row) > 9 else ''
+            raw_schedule = txt(emp_row[COL_SCHEDULE]) if len(emp_row) > COL_SCHEDULE else ''
             rule = parse_schedule(raw_schedule)
             is_missing = rule['type'] == 'missing'
 
             e = {
-                'number': txt(emp_row[1]), 'name': txt(emp_row[3]),
+                'number': number,
+                'name': name,
                 'position': position,
-                'department': department, 'unit': unit,
-                'personnel': txt(emp_row[4]),
+                'department': department,
+                'unit': unit,
+                'personnel': personnel,
                 'work_format': work_format,
                 'schedule': raw_schedule or 'График не указан',
                 'rule': rule,
@@ -211,7 +260,7 @@ def analyze(path):
             }
 
             for day in range(1, 32):
-                c = 49 + (day - 1) * 2
+                c = COL_DAY_START + (day - 1) * COL_DAY_STEP
                 if c + 1 >= len(emp_row) or c + 1 >= len(data_row):
                     break
                 try:
@@ -303,7 +352,7 @@ def analyze(path):
                                 statuses.append('СКУД соответствует РВ')
 
                 days.append({
-                    'number': e['number'], 'name': e['name'], 'position': position,
+                    'number': number, 'name': name, 'position': position,
                     'department': department, 'unit': unit,
                     'work_format': work_format, 'date': date,
                     'rv': rv, 'skud': skud, 'interval': txt(raw) or '—',
@@ -345,7 +394,6 @@ DASH_DESCRIPTIONS = [
 
 DKEYS = ['plan', 'fact', 'late', 'early', 'late_leave', 'off', 'early_arr', 'remote_rv', 'free']
 
-# Определения колонок для чекбоксов «Показывать показатели»
 COL_TOGGLES = [
     ('plan',      'План (РВ), ч'),
     ('fact',      'Факт, ч'),
@@ -363,7 +411,6 @@ def safe_filename(name):
     cleaned = re.sub(r'[\\/:*?"<>|]', '_', name).strip()
     return cleaned or 'export'
 
-# ---------------- Единый фильтр-бар ----------------
 def filter_bar(tab, emps, dept_sel='', unit_sel='', emp_sel='', show_employee=False):
     dept_sel = str(dept_sel or '')
     unit_sel = str(unit_sel or '')
@@ -407,9 +454,7 @@ def filter_bar(tab, emps, dept_sel='', unit_sel='', emp_sel='', show_employee=Fa
         '</form></div>'
     )
 
-# ---------------- Чекбоксы колонок ----------------
 def cols_state(args):
-    """Активные колонки. По умолчанию все."""
     raw = args.get('cols', '')
     if not raw:
         return set(ALL_COLS)
@@ -436,10 +481,6 @@ def render_cols_form(tab, active, dept='', unit=''):
     )
 
 def collect_cols(args):
-    """
-    Если ни один checkbox не был отмечен (нет ни одного col_* в args) — все активны.
-    Если есть хотя бы один — активны только отмеченные.
-    """
     any_marker = any(k.startswith('col_') for k in args.keys())
     if not any_marker:
         return set(ALL_COLS)
@@ -450,17 +491,11 @@ def collect_cols(args):
     return active
 
 def cols_to_url(active):
-    """active: set колонок. Возвращает строку для ?cols=... или '' если все."""
     if active == ALL_COLS:
         return ''
     return ','.join(sorted(active))
 
-# ---------------- Круговая диаграмма ----------------
 def render_pie(title, parts):
-    """
-    parts: список (label, value_minutes, color)
-    Рисует круговую диаграмму через SVG + легенду. Без JS.
-    """
     total = sum(v for _, v, _ in parts) or 1
     R = 60
     C = 2 * 3.14159265 * R
@@ -497,7 +532,6 @@ def render_pie(title, parts):
             ''.join(legend) + '</div></div>'
             '<p class="note">График отражает только выбранные категории.</p></div>')
 
-# ---------------- Экспорт выгрузки по сотрудникам ----------------
 def export_xlsx(emps, days, path):
     wb = Workbook()
     ws = wb.active
@@ -597,7 +631,6 @@ def export_xlsx(emps, days, path):
 
     wb.save(path)
 
-# ---------------- Агрегация по департаментам / подразделениям ----------------
 def dashboard_data(emps, days, group_by='department', filter_dept='', filter_unit=''):
     agg = {}
     for e in emps:
@@ -631,7 +664,6 @@ def dashboard_data(emps, days, group_by='department', filter_dept='', filter_uni
     total['diff'] = total['fact'] - total['plan']
     return rows, total
 
-# ---------------- Экспорт дашборда ----------------
 def export_dashboard_xlsx(emps, days, group_by, filter_dept, filter_unit, path, sheet_name):
     rows, total = dashboard_data(emps, days, group_by, filter_dept, filter_unit)
     wb = Workbook()
@@ -678,7 +710,6 @@ def export_dashboard_xlsx(emps, days, group_by, filter_dept, filter_unit, path, 
         ws.column_dimensions[get_column_letter(c)].width = 16
     wb.save(path)
 
-# ---------------- Экспорт динамики ----------------
 def export_dynamics_xlsx(history_data, path, filter_dept='', filter_unit=''):
     wb = Workbook()
     ws = wb.active
@@ -743,7 +774,6 @@ def export_dynamics_xlsx(history_data, path, filter_dept='', filter_unit=''):
         ws.column_dimensions[get_column_letter(c)].width = 16
     wb.save(path)
 
-# ---------------- Работа с историей снапшотов ----------------
 def snapshot_path(period_key):
     return HISTORY_DIR / f'{period_key}.pkl'
 
@@ -800,7 +830,6 @@ def load_state():
     except Exception:
         return None
 
-# ---------------- CSS и HTML-обвязка ----------------
 CSS = (
     ':root{--bg:#f2f4f7;--card:#ffffff;--ink:#1b2430;--muted:#6b7684;'
     '--accent:#2f6fed;--accent-dark:#1f56c4;--green:#1f9d55;--red:#b42318;--radius:14px}'
@@ -1036,7 +1065,6 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
             '<th>Интервал</th><th>План</th><th>Статусы</th></tr>'
             + ''.join(dr) + '</table></div></div>')
 
-# ---------------- Рендер дашборда (с чекбоксами колонок и диаграммой) ----------------
 def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', active_cols=None):
     rows, t = dashboard_data(emps, days, group_by, filter_dept, filter_unit)
     if active_cols is None:
@@ -1076,7 +1104,6 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
              '<div class="stat"><a class="btn btn-green" href="' + export_url +
              '">Export Excel</a></div></div></div>')
 
-    # Заголовки таблицы: базовые + выбранные колонки
     head_cells = ['<th>' + ('Департамент' if group_by == 'department' else 'Подразделение') + '</th>']
     head_cells.append('<th>Сотрудники</th>')
     col_titles = {
@@ -1111,7 +1138,6 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
             'считаются потенциально удалёнными и в план/факт не входят. '
             'Часы показаны в формате ЧЧ:ММ.</p>')
 
-    # Круговая диаграмма по итогу
     pie_parts = [
         ('Опоздания',    t.get('late', 0),  '#e57373'),
         ('Ранние уходы', t.get('early', 0), '#f0b24a'),
