@@ -95,7 +95,6 @@ def parse_period(head_text):
 
 def is_employee_row(row):
     """
-    Структура после prepare_upload (колонка A используется как «Департамент»):
     A (0) — Департамент
     B (1) — №
     C (2) — Подразделение
@@ -184,34 +183,33 @@ def load_departments():
 
 def prepare_upload(src_path, dst_path):
     """
-    Заполняет пустую колонку A «Департаментом» через справочник:
-    C (Подразделение) → F (Департамент в справочнике) → A (в выгрузке).
+    Потоковая обработка: не грузит весь файл в память.
+    Заполняет пустую колонку A «Департаментом» из справочника.
     """
     DEPT_MAP = load_departments()
 
-    wb = load_workbook(src_path, data_only=False, keep_links=False)
-    ws = wb.active
+    wb_src = load_workbook(src_path, data_only=True, read_only=True)
+    ws_src = wb_src.active
+
+    wb_dst = Workbook(write_only=True)
+    ws_dst = wb_dst.create_sheet()
 
     header_row = None
-    for r in range(1, min(20, ws.max_row) + 1):
-        v = ws.cell(row=r, column=2).value
-        if txt(v) == '№':
-            header_row = r
-            break
-    if header_row is None:
-        header_row = 4
-
-    ws.cell(row=header_row, column=1).value = 'Департамент'
-
-    for r in range(header_row + 1, ws.max_row + 1):
-        unit = txt(ws.cell(row=r, column=3).value)
-        if not unit:
+    for r_idx, row in enumerate(ws_src.iter_rows(values_only=True), start=1):
+        if header_row is None:
+            if len(row) > 1 and txt(row[1]) == '№':
+                header_row = r_idx
+                ws_dst.append(['Департамент'] + list(row))
+                continue
+            ws_dst.append(list(row))
             continue
+        unit = txt(row[2]) if len(row) > 2 else ''
         dept = DEPT_MAP.get(unit, '') or unit
-        ws.cell(row=r, column=1).value = dept
+        ws_dst.append([dept] + list(row))
 
-    wb.save(dst_path)
-    wb.close()
+    wb_src.close()
+    wb_dst.save(dst_path)
+    wb_dst.close()
 
 def analyze(path):
     """
@@ -225,13 +223,9 @@ def analyze(path):
     H (7)  — Дата увольнения
     I (8)  — Формат работы
     J (9)  — График
-    K (10) — Болезнь (РВ)
-    L (11) — Болезнь (СКУД)
     ...
-    AE (30) — Разница СБ и плановых часов
     AF (31) — 01 Сб — РВ
     AG (32) — 01 Сб — СКУД
-    ...
     """
     COL_DEPARTMENT = 0
     COL_NUMBER     = 1
@@ -294,7 +288,8 @@ def analyze(path):
                 'summary': {
                     'work': 0, 'remote': 0, 'late': 0, 'early': 0, 'anomaly': 0,
                     'late_leave': 0, 'above': 0.0, 'below': 0.0, 'off': 0,
-                    'problems': 0, 'excluded': False, 'termination': is_missing
+                    'problems': 0, 'excluded': False, 'termination': is_missing,
+                    'plan': 0, 'fact': 0
                 }
             }
 
@@ -314,6 +309,11 @@ def analyze(path):
                 kind = ''
                 plan = '—'
                 m = strict_day(rule, is_missing, start, end, rv, skud)
+
+                # --- НАКАПЛИВАЕМ план и факт в summary ---
+                e['summary']['plan'] += m['plan']
+                e['summary']['fact'] += m['fact']
+                # ---
 
                 if is_missing:
                     if rv > 0:
@@ -1058,6 +1058,7 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
         status = ('<span class="tag tag-gray">Увольнение сотрудника</span>'
                   if s['termination'] else '<span class="tag tag-green">Сформирован</span>')
 
+        # Отклонение и статус нормы
         diff_min = s['fact'] - s['plan']
         if diff_min < -5:
             norm_status = '<span class="tag tag-red">Недоработка</span>'
