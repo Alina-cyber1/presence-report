@@ -17,7 +17,7 @@ for folder in (UPLOAD_DIR, EXPORT_DIR, CONFIG_DIR, HISTORY_DIR):
     folder.mkdir(exist_ok=True)
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
 NO_DEPT = 'Без департамента'
 NO_UNIT = 'Без подразделения'
@@ -95,18 +95,20 @@ def parse_period(head_text):
 
 def is_employee_row(row):
     """
-    Структура после prepare_upload:
-    A (0) — Департамент
-    B (1) — №
-    C (2) — Подразделение
-    D (3) — Сотрудник (ФИО)
-    E (4) — Табельный номер (0000-XXXXX)
-    Не считаем сотрудником строки, где в D не ФИО, а «Руководство …» или «Курьер …».
+    Структура исходной выгрузки (prepare_upload не используется):
+    A (0) — №
+    B (1) — Подразделение
+    C (2) — Сотрудник (ФИО)
+    D (3) — Табельный номер (0000-XXXXX)
+    E (4) — Должность
+
+    Не считаем сотрудником строки, где в C не ФИО,
+    а «Руководство …» или «Курьер …».
     """
     if row is None: return False
-    number = txt(row[1]) if len(row) > 1 else ''
-    name = txt(row[3]) if len(row) > 3 else ''
-    personnel = txt(row[4]) if len(row) > 4 else ''
+    number = txt(row[0]) if len(row) > 0 else ''
+    name = txt(row[2]) if len(row) > 2 else ''
+    personnel = txt(row[3]) if len(row) > 3 else ''
     if not re.fullmatch(r'\d+', number):
         return False
     if not re.fullmatch(r'\d{4}-\d{5}', personnel):
@@ -120,9 +122,6 @@ def is_employee_row(row):
     words = [w for w in re.split(r'\s+', name) if w]
     if len(words) < 2:
         return False
-    for w in words:
-        if len(w) < 2 or not w[0].isupper():
-            return False
     return True
 
 def strict_day(rule, missing, start, end, rv, skud):
@@ -182,65 +181,34 @@ def load_departments():
     except Exception:
         return {}
 
-def prepare_upload(src_path, dst_path):
-    """
-    Заполняет пустую колонку A «Департаментом» через справочник.
-    НЕ пересобирает файл — сохраняет его как есть.
-    """
-    DEPT_MAP = load_departments()
-
-    wb = load_workbook(src_path, data_only=False, keep_links=False)
-    ws = wb.active
-
-    header_row = None
-    for r in range(1, min(20, ws.max_row) + 1):
-        v = ws.cell(row=r, column=2).value
-        if txt(v) == '№':
-            header_row = r
-            break
-    if header_row is None:
-        header_row = 4
-
-    ws.cell(row=header_row, column=1).value = 'Департамент'
-
-    for r in range(header_row + 1, ws.max_row + 1):
-        unit = txt(ws.cell(row=r, column=3).value)
-        if not unit:
-            continue
-        dept = DEPT_MAP.get(unit, '') or unit
-        ws.cell(row=r, column=1).value = dept
-
-    wb.save(dst_path)
-    wb.close()
-
 def analyze(path):
     """
-    A (0)  — Департамент
-    B (1)  — №
-    C (2)  — Подразделение
-    D (3)  — Сотрудник (ФИО)
-    E (4)  — Табельный
-    F (5)  — Должность
-    G (6)  — Дата приема
-    H (7)  — Дата увольнения
-    I (8)  — Формат работы
-    J (9)  — График
-    K (10) — Болезнь (РВ)
-    L (11) — Болезнь (СКУД)
+    Структура ИСХОДНОЙ выгрузки (prepare_upload не используется):
+    A (0)  — №
+    B (1)  — Подразделение
+    C (2)  — Сотрудник (ФИО)
+    D (3)  — Табельный
+    E (4)  — Должность
+    F (5)  — Дата приема
+    G (6)  — Дата увольнения
+    H (7)  — Формат работы
+    I (8)  — График
+    J (9)  — Болезнь (РВ)
+    K (10) — Болезнь (СКУД)
     ...
-    AE (30) — Разница СБ и плановых часов
-    AF (31) — 01 Сб — РВ
-    AG (32) — 01 Сб — СКУД
+    AD (29) — Разница СБ и плановых часов
+    AE (30) — 01 Сб — РВ
+    AF (31) — 01 Сб — СКУД
+    ...
     """
-    COL_DEPARTMENT = 0
-    COL_NUMBER     = 1
-    COL_UNIT       = 2
-    COL_NAME       = 3
-    COL_PERSONNEL  = 4
-    COL_POSITION   = 5
-    COL_FORMAT     = 8
-    COL_SCHEDULE   = 9
-    COL_DAY_START  = 31
+    COL_NUMBER     = 0   # A: №
+    COL_UNIT       = 1   # B: Подразделение
+    COL_NAME       = 2   # C: ФИО
+    COL_PERSONNEL  = 3   # D: Табельный
+    COL_POSITION   = 4   # E: Должность
+    COL_FORMAT     = 7   # H: Формат работы
+    COL_SCHEDULE   = 8   # I: График
+    COL_DAY_START  = 30  # AE: 01 Сб — РВ
     COL_DAY_STEP   = 2
 
     DEPT_MAP = load_departments()
@@ -268,14 +236,13 @@ def analyze(path):
             emp_row = window[0]
             data_row = window[2]
 
-            department_direct = txt(emp_row[COL_DEPARTMENT]) if len(emp_row) > COL_DEPARTMENT else ''
-            unit = txt(emp_row[COL_UNIT]) if len(emp_row) > COL_UNIT else ''
-            department = department_direct or DEPT_MAP.get(unit, '') or unit or NO_DEPT
-
             number    = txt(emp_row[COL_NUMBER])    if len(emp_row) > COL_NUMBER    else ''
+            unit      = txt(emp_row[COL_UNIT])      if len(emp_row) > COL_UNIT      else ''
             name      = txt(emp_row[COL_NAME])      if len(emp_row) > COL_NAME      else ''
             personnel = txt(emp_row[COL_PERSONNEL]) if len(emp_row) > COL_PERSONNEL else ''
             position  = txt(emp_row[COL_POSITION])  if len(emp_row) > COL_POSITION  else ''
+            department = DEPT_MAP.get(unit, '') or unit or NO_DEPT
+
             work_format = txt(emp_row[COL_FORMAT])  if len(emp_row) > COL_FORMAT    else ''
             if not work_format:
                 work_format = 'Не указан'
@@ -1399,9 +1366,8 @@ def upload():
     STATE['status'] = 'processing'
     STATE['error'] = None
     try:
-        prepared = UPLOAD_DIR / 'prepared.xlsx'
-        prepare_upload(LAST_FILE, prepared)
-        emps, days, meta = analyze(prepared)
+        # Файл открывается ОДИН раз в analyze() — без prepare_upload
+        emps, days, meta = analyze(LAST_FILE)
 
         STATE['employees'] = emps
         STATE['days'] = days
