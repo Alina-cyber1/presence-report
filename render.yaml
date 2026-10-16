@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: presence-report
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --timeout 300 --workers 1 --threads 2 --max-requests 100 --max-requests-jitter 10
+    healthCheckPath: /admin
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
