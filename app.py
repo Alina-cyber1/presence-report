@@ -185,38 +185,33 @@ def load_departments():
 def prepare_upload(src_path, dst_path):
     """
     Заполняет пустую колонку A «Департаментом» через справочник.
-    Потоковая обработка: не грузит весь файл в память (read_only + write_only).
-    Структура колонок НЕ меняется — колонки те же, что и раньше.
+    НЕ пересобирает файл — сохраняет его как есть.
     """
-    from openpyxl import Workbook
     DEPT_MAP = load_departments()
 
-    # Читаем исходник в потоковом режиме
-    wb_src = load_workbook(src_path, data_only=True, read_only=True)
-    ws_src = wb_src.active
-
-    # Пишем результат в потоковом режиме
-    wb_dst = Workbook(write_only=True)
-    ws_dst = wb_dst.create_sheet()
+    wb = load_workbook(src_path, data_only=False, keep_links=False)
+    ws = wb.active
 
     header_row = None
-    for r_idx, row in enumerate(ws_src.iter_rows(values_only=True), start=1):
-        if header_row is None:
-            # Ищем шапку: там где в колонке B стоит «№»
-            if r_idx <= 20 and len(row) > 1 and txt(row[1]) == '№':
-                header_row = r_idx
-                ws_dst.append(['Департамент'] + list(row))
-                continue
-            ws_dst.append(list(row))
-            continue
-        # Строки данных: заполняем колонку A
-        unit = txt(row[2]) if len(row) > 2 else ''
-        dept = DEPT_MAP.get(unit, '') or unit
-        ws_dst.append([dept] + list(row))
+    for r in range(1, min(20, ws.max_row) + 1):
+        v = ws.cell(row=r, column=2).value
+        if txt(v) == '№':
+            header_row = r
+            break
+    if header_row is None:
+        header_row = 4
 
-    wb_src.close()
-    wb_dst.save(dst_path)
-    wb_dst.close()
+    ws.cell(row=header_row, column=1).value = 'Департамент'
+
+    for r in range(header_row + 1, ws.max_row + 1):
+        unit = txt(ws.cell(row=r, column=3).value)
+        if not unit:
+            continue
+        dept = DEPT_MAP.get(unit, '') or unit
+        ws.cell(row=r, column=1).value = dept
+
+    wb.save(dst_path)
+    wb.close()
 
 def analyze(path):
     """
