@@ -95,16 +95,17 @@ def parse_period(head_text):
 
 def is_employee_row(row):
     """
-    В новой структуре выгрузки:
-    A (0) — Подразделение
-    B (1) — № (порядковый)
-    C (2) — Сотрудник (ФИО)
-    D (3) — Табельный номер (0000-XXXXX)
+    Структура выгрузки (по скриншоту):
+    A (0) — № (порядковый)
+    B (1) — Департамент (заполнен ВПР из справочника)
+    C (2) — Подразделение
+    D (3) — Сотрудник (ФИО)
+    E (4) — Табельный номер (0000-XXXXX)
     """
     if row is None: return False
-    number = txt(row[1]) if len(row) > 1 else ''
-    name = txt(row[2]) if len(row) > 2 else ''
-    personnel = txt(row[3]) if len(row) > 3 else ''
+    number = txt(row[0]) if len(row) > 0 else ''
+    name = txt(row[3]) if len(row) > 3 else ''
+    personnel = txt(row[4]) if len(row) > 4 else ''
     return bool(re.fullmatch(r'\d+', number) and name and name.lower() != 'сотрудник'
                 and re.fullmatch(r'\d{4}-\d{5}', personnel))
 
@@ -149,6 +150,7 @@ def load_departments():
     """
     Читает Справочник.xlsx (лист «Справочник»).
     Возвращает словарь {Наименование подразделения (колонка B): Департамент (колонка F)}.
+    Используется как fallback, если в выгрузке колонка «Департамент» (B) пустая.
     """
     path = BASE_DIR / 'Справочник.xlsx'
     if not path.exists():
@@ -171,39 +173,39 @@ def load_departments():
 
 def analyze(path):
     """
-    Разбор выгрузки. Структура колонок (новая):
-    A (0)  — Подразделение
-    B (1)  — № (порядковый)
-    C (2)  — Сотрудник (ФИО)
-    D (3)  — Табельный номер
-    E (4)  — Должность
-    F (5)  — Дата приёма
-    G (6)  — Дата увольнения
-    H (7)  — Формат работы
-    I (8)  — График
-    J (9)  — Больничные
-    ...
-    AW (48) — 1-е число (РВ)
-    AX (49) — 1-е число (СКУД)
-    ...
+    Структура колонок (по скриншоту):
+    A (0)  — №
+    B (1)  — Департамент (заполнен ВПР из справочника)
+    C (2)  — Подразделение
+    D (3)  — Сотрудник (ФИО)
+    E (4)  — Табельный номер
+    F (5)  — Должность
+    G (6)  — Дата приема
+    H (7)  — Дата увольнения
+    I (8)  — Формат работы
+    J (9)  — График работы
+    K (10) — Больничные
+    L (11) — Дополнительный отпуск
+    ... далее дни месяца
     """
     # ---- КОНСТАНТЫ ИНДЕКСОВ КОЛОНОК (0-based) ----
-    COL_UNIT      = 0   # A: Подразделение
-    COL_NUMBER    = 1   # B: №
-    COL_NAME      = 2   # C: ФИО
-    COL_PERSONNEL = 3   # D: Табельный
-    COL_POSITION  = 4   # E: Должность
-    COL_FORMAT    = 7   # H: Формат работы
-    COL_SCHEDULE  = 8   # I: График
-    COL_DAY_START = 48  # AW: первое число (РВ)
-    COL_DAY_STEP  = 2   # шаг между числами
+    COL_NUMBER     = 0   # A: №
+    COL_DEPARTMENT = 1   # B: Департамент (из ВПР)
+    COL_UNIT       = 2   # C: Подразделение
+    COL_NAME       = 3   # D: ФИО
+    COL_PERSONNEL  = 4   # E: Табельный
+    COL_POSITION   = 5   # F: Должность
+    COL_FORMAT     = 8   # I: Формат работы
+    COL_SCHEDULE   = 9   # J: График
+    COL_DAY_START  = 49  # AX: первое число (РВ) — ПРОВЕРИТЬ ПО ШАПКЕ!
+    COL_DAY_STEP   = 2   # шаг между числами (РВ, СКУД)
 
     DEPT_MAP = load_departments()
     wb = load_workbook(path, data_only=True, read_only=True, keep_links=False)
     ws = wb.active
     rows_iter = ws.iter_rows(values_only=True)
 
-    # Определяем период (год, месяц)
+    # Определяем период (год, месяц) из шапки
     year, month = datetime.now().year, datetime.now().month
     for idx, row in enumerate(rows_iter):
         joined = ' '.join(txt(c) for c in row[:15])
@@ -224,10 +226,10 @@ def analyze(path):
             emp_row = window[0]
             data_row = window[2]
 
-            # --- Подразделение и департамент ---
+            # --- Департамент: приоритет — из выгрузки (колонка B, ВПР), fallback — справочник ---
+            department_direct = txt(emp_row[COL_DEPARTMENT]) if len(emp_row) > COL_DEPARTMENT else ''
             unit = txt(emp_row[COL_UNIT]) if len(emp_row) > COL_UNIT else ''
-            # Департамент ВСЕГДА из справочника; fallback — подразделение
-            department = DEPT_MAP.get(unit, '') or unit or NO_DEPT
+            department = department_direct or DEPT_MAP.get(unit, '') or unit or NO_DEPT
 
             # --- Остальные поля ---
             number    = txt(emp_row[COL_NUMBER])    if len(emp_row) > COL_NUMBER    else ''
