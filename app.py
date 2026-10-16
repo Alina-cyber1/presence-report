@@ -95,17 +95,17 @@ def parse_period(head_text):
 
 def is_employee_row(row):
     """
-    Структура после вставки колонки «Департамент»:
-    A (0) — №
-    B (1) — Департамент
+    Структура после prepare_upload (колонка A используется как «Департамент»):
+    A (0) — Департамент
+    B (1) — №
     C (2) — Подразделение
     D (3) — Сотрудник (ФИО)
     E (4) — Табельный номер (0000-XXXXX)
     """
     if row is None: return False
-    number = txt(row[0]) if len(row) > 0 else ''
-    name = txt(row[3]) if len(row) > 3 else ''
-    personnel = txt(row[4]) if len(row) > 4 else ''
+    number = txt(row[1]) if len(row) > 1 else ''       # B — №
+    name = txt(row[3]) if len(row) > 3 else ''         # D — ФИО
+    personnel = txt(row[4]) if len(row) > 4 else ''    # E — Табельный
     return bool(re.fullmatch(r'\d+', number) and name and name.lower() != 'сотрудник'
                 and re.fullmatch(r'\d{4}-\d{5}', personnel))
 
@@ -172,64 +172,58 @@ def load_departments():
 
 def prepare_upload(src_path, dst_path):
     """
-    Читает исходную выгрузку (без колонки «Департамент»),
-    вставляет новую колонку B «Департамент»,
-    заполняет её через справочник (подразделение → департамент),
-    сохраняет в dst_path.
+    Читает исходную выгрузку.
+    Колонка A в исходнике ПУСТАЯ — используем её как «Департамент».
+    Заполняем её через справочник: подразделение (C) → департамент.
+    Сохраняем в dst_path.
 
     Исходная структура:
-        A — №
-        B — Подразделение
-        C — Сотрудник
-        D — Табельный номер
-        E — Должность
-        F — Дата приема
-        G — Дата увольнения
-        H — Формат работы
-        I — График
+        A — (пустая)
+        B — №
+        C — Подразделение
+        D — Сотрудник
+        E — Табельный
+        F — Должность
+        G — Дата приема
+        H — Дата увольнения
+        I — Формат работы
+        J — График
         ... далее дни месяца
 
-    Финальная структура (после вставки):
-        A — №
-        B — Департамент     ← новая колонка, заполнена ВПР
-        C — Подразделение   ← было B
-        D — Сотрудник       ← было C
-        E — Табельный       ← было D
-        F — Должность       ← было E
-        G — Дата приема     ← было F
-        H — Дата увольнения ← было G
-        I — Формат работы   ← было H
-        J — График          ← было I
-        ... далее дни месяца (сдвинуты на +1)
+    Финальная структура (только A заполнена):
+        A — Департамент   ← заполнена
+        B — №
+        C — Подразделение
+        D — Сотрудник
+        E — Табельный
+        ... далее без сдвигов
     """
     DEPT_MAP = load_departments()
 
     wb = load_workbook(src_path, data_only=False)
     ws = wb.active
 
-    # Вставляем новую колонку в позицию B (индекс 2 в openpyxl — 1-based)
-    ws.insert_cols(2)
-
-    # Ищем строку с шапкой (там где «№»)
+    # Ищем строку с шапкой (там где «№» в колонке B)
     header_row = None
     for r in range(1, min(20, ws.max_row) + 1):
-        v = ws.cell(row=r, column=1).value
+        v = ws.cell(row=r, column=2).value
         if txt(v) == '№':
             header_row = r
             break
     if header_row is None:
-        header_row = 3  # fallback
+        header_row = 4  # fallback
 
-    ws.cell(row=header_row, column=2).value = 'Департамент'
+    # Заголовок колонки A
+    ws.cell(row=header_row, column=1).value = 'Департамент'
 
     # Заполняем департамент для каждой строки данных
     for r in range(header_row + 1, ws.max_row + 1):
-        # Подразделение теперь в колонке C (индекс 3, 1-based)
+        # Подразделение в колонке C (индекс 3, 1-based)
         unit = txt(ws.cell(row=r, column=3).value)
         if not unit:
             continue
         dept = DEPT_MAP.get(unit, '') or unit
-        ws.cell(row=r, column=2).value = dept
+        ws.cell(row=r, column=1).value = dept
 
     wb.save(dst_path)
     wb.close()
@@ -237,8 +231,8 @@ def prepare_upload(src_path, dst_path):
 def analyze(path):
     """
     Структура колонок (после prepare_upload):
-    A (0)  — №
-    B (1)  — Департамент
+    A (0)  — Департамент (заполнен)
+    B (1)  — №
     C (2)  — Подразделение
     D (3)  — Сотрудник (ФИО)
     E (4)  — Табельный номер
@@ -247,20 +241,24 @@ def analyze(path):
     H (7)  — Дата увольнения
     I (8)  — Формат работы
     J (9)  — График работы
-    K (10) — Больничные
-    L (11) — Дополнительный отпуск
-    ... далее дни месяца
+    K (10) — Болезнь (РВ)
+    L (11) — Болезнь (СКУД)
+    ...
+    AE (30) — Разница СБ и плановых часов
+    AF (31) — 01 Сб — РВ
+    AG (32) — 01 Сб — СКУД
+    ...
     """
     # ---- КОНСТАНТЫ ИНДЕКСОВ КОЛОНОК (0-based) ----
-    COL_NUMBER     = 0   # A: №
-    COL_DEPARTMENT = 1   # B: Департамент
+    COL_DEPARTMENT = 0   # A: Департамент (заполнен prepare_upload)
+    COL_NUMBER     = 1   # B: №
     COL_UNIT       = 2   # C: Подразделение
     COL_NAME       = 3   # D: ФИО
     COL_PERSONNEL  = 4   # E: Табельный
     COL_POSITION   = 5   # F: Должность
     COL_FORMAT     = 8   # I: Формат работы
     COL_SCHEDULE   = 9   # J: График
-    COL_DAY_START  = 49  # AY: первое число (было 48, сдвинулось на +1 из-за вставки колонки B)
+    COL_DAY_START  = 31  # AF: 01 Сб — РВ
     COL_DAY_STEP   = 2
 
     DEPT_MAP = load_departments()
@@ -289,7 +287,7 @@ def analyze(path):
             emp_row = window[0]
             data_row = window[2]
 
-            # --- Департамент: приоритет — из выгрузки (колонка B), fallback — справочник ---
+            # --- Департамент: приоритет — из колонки A, fallback — справочник ---
             department_direct = txt(emp_row[COL_DEPARTMENT]) if len(emp_row) > COL_DEPARTMENT else ''
             unit = txt(emp_row[COL_UNIT]) if len(emp_row) > COL_UNIT else ''
             department = department_direct or DEPT_MAP.get(unit, '') or unit or NO_DEPT
@@ -1362,10 +1360,10 @@ def upload():
     STATE['status'] = 'processing'
     STATE['error'] = None
     try:
-        # Сначала готовим файл: добавляем колонку «Департамент» через справочник
+        # Заполняем пустую колонку A «Департаментом» через справочник
         prepared = UPLOAD_DIR / 'prepared.xlsx'
         prepare_upload(LAST_FILE, prepared)
-        # Потом анализируем уже подготовленный файл
+        # Анализируем уже подготовленный файл
         emps, days, meta = analyze(prepared)
 
         STATE['employees'] = emps
