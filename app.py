@@ -95,9 +95,9 @@ def parse_period(head_text):
 
 def is_employee_row(row):
     """
-    Структура выгрузки (по скриншоту):
-    A (0) — № (порядковый)
-    B (1) — Департамент (заполнен ВПР из справочника)
+    Структура после вставки колонки «Департамент»:
+    A (0) — №
+    B (1) — Департамент
     C (2) — Подразделение
     D (3) — Сотрудник (ФИО)
     E (4) — Табельный номер (0000-XXXXX)
@@ -150,7 +150,6 @@ def load_departments():
     """
     Читает Справочник.xlsx (лист «Справочник»).
     Возвращает словарь {Наименование подразделения (колонка B): Департамент (колонка F)}.
-    Используется как fallback, если в выгрузке колонка «Департамент» (B) пустая.
     """
     path = BASE_DIR / 'Справочник.xlsx'
     if not path.exists():
@@ -171,11 +170,75 @@ def load_departments():
     except Exception:
         return {}
 
+def prepare_upload(src_path, dst_path):
+    """
+    Читает исходную выгрузку (без колонки «Департамент»),
+    вставляет новую колонку B «Департамент»,
+    заполняет её через справочник (подразделение → департамент),
+    сохраняет в dst_path.
+
+    Исходная структура:
+        A — №
+        B — Подразделение
+        C — Сотрудник
+        D — Табельный номер
+        E — Должность
+        F — Дата приема
+        G — Дата увольнения
+        H — Формат работы
+        I — График
+        ... далее дни месяца
+
+    Финальная структура (после вставки):
+        A — №
+        B — Департамент     ← новая колонка, заполнена ВПР
+        C — Подразделение   ← было B
+        D — Сотрудник       ← было C
+        E — Табельный       ← было D
+        F — Должность       ← было E
+        G — Дата приема     ← было F
+        H — Дата увольнения ← было G
+        I — Формат работы   ← было H
+        J — График          ← было I
+        ... далее дни месяца (сдвинуты на +1)
+    """
+    DEPT_MAP = load_departments()
+
+    wb = load_workbook(src_path, data_only=False)
+    ws = wb.active
+
+    # Вставляем новую колонку в позицию B (индекс 2 в openpyxl — 1-based)
+    ws.insert_cols(2)
+
+    # Ищем строку с шапкой (там где «№»)
+    header_row = None
+    for r in range(1, min(20, ws.max_row) + 1):
+        v = ws.cell(row=r, column=1).value
+        if txt(v) == '№':
+            header_row = r
+            break
+    if header_row is None:
+        header_row = 3  # fallback
+
+    ws.cell(row=header_row, column=2).value = 'Департамент'
+
+    # Заполняем департамент для каждой строки данных
+    for r in range(header_row + 1, ws.max_row + 1):
+        # Подразделение теперь в колонке C (индекс 3, 1-based)
+        unit = txt(ws.cell(row=r, column=3).value)
+        if not unit:
+            continue
+        dept = DEPT_MAP.get(unit, '') or unit
+        ws.cell(row=r, column=2).value = dept
+
+    wb.save(dst_path)
+    wb.close()
+
 def analyze(path):
     """
-    Структура колонок (по скриншоту):
+    Структура колонок (после prepare_upload):
     A (0)  — №
-    B (1)  — Департамент (заполнен ВПР из справочника)
+    B (1)  — Департамент
     C (2)  — Подразделение
     D (3)  — Сотрудник (ФИО)
     E (4)  — Табельный номер
@@ -190,40 +253,21 @@ def analyze(path):
     """
     # ---- КОНСТАНТЫ ИНДЕКСОВ КОЛОНОК (0-based) ----
     COL_NUMBER     = 0   # A: №
-    COL_DEPARTMENT = 1   # B: Департамент (из ВПР)
+    COL_DEPARTMENT = 1   # B: Департамент
     COL_UNIT       = 2   # C: Подразделение
     COL_NAME       = 3   # D: ФИО
     COL_PERSONNEL  = 4   # E: Табельный
     COL_POSITION   = 5   # F: Должность
     COL_FORMAT     = 8   # I: Формат работы
     COL_SCHEDULE   = 9   # J: График
-    COL_DAY_START  = 49  # AX: первое число (РВ) — ПРОВЕРИТЬ ПО ШАПКЕ!
-    COL_DAY_STEP   = 2   # шаг между числами (РВ, СКУД)
+    COL_DAY_START  = 50  # AY: первое число (было 49, сдвинулось на +1 из-за вставки колонки B)
+    COL_DAY_STEP   = 2
 
     DEPT_MAP = load_departments()
     wb = load_workbook(path, data_only=True, read_only=True, keep_links=False)
     ws = wb.active
     rows_iter = ws.iter_rows(values_only=True)
-    
-    # ===== ОТЛАДКА: смотрим первые 10 строк =====
-    print('=' * 60)
-    print('ОТЛАДКА ВЫГРУЗКИ: первые 10 строк')
-    print('=' * 60)
-    debug_iter = ws.iter_rows(values_only=True)
-    for i, r in enumerate(debug_iter):
-        if i >= 10:
-            break
-        cells = []
-        for j, c in enumerate(r[:15]):
-            v = str(c)[:25] if c is not None else ''
-            cells.append(f'[{j}]{v}')
-        print(f'Строка {i}: ' + ' | '.join(cells))
-    print('=' * 60)
-    
-    # Перезапускаем итератор
-    rows_iter = ws.iter_rows(values_only=True)
 
-    
     # Определяем период (год, месяц) из шапки
     year, month = datetime.now().year, datetime.now().month
     for idx, row in enumerate(rows_iter):
@@ -245,7 +289,7 @@ def analyze(path):
             emp_row = window[0]
             data_row = window[2]
 
-            # --- Департамент: приоритет — из выгрузки (колонка B, ВПР), fallback — справочник ---
+            # --- Департамент: приоритет — из выгрузки (колонка B), fallback — справочник ---
             department_direct = txt(emp_row[COL_DEPARTMENT]) if len(emp_row) > COL_DEPARTMENT else ''
             unit = txt(emp_row[COL_UNIT]) if len(emp_row) > COL_UNIT else ''
             department = department_direct or DEPT_MAP.get(unit, '') or unit or NO_DEPT
@@ -1318,7 +1362,12 @@ def upload():
     STATE['status'] = 'processing'
     STATE['error'] = None
     try:
-        emps, days, meta = analyze(LAST_FILE)
+        # Сначала готовим файл: добавляем колонку «Департамент» через справочник
+        prepared = UPLOAD_DIR / 'prepared.xlsx'
+        prepare_upload(LAST_FILE, prepared)
+        # Потом анализируем уже подготовленный файл
+        emps, days, meta = analyze(prepared)
+
         STATE['employees'] = emps
         STATE['days'] = days
         STATE['meta'] = meta
