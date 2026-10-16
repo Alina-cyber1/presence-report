@@ -260,7 +260,7 @@ def analyze(path):
     COL_POSITION   = 5   # F: Должность
     COL_FORMAT     = 8   # I: Формат работы
     COL_SCHEDULE   = 9   # J: График
-    COL_DAY_START  = 50  # AY: первое число (было 49, сдвинулось на +1 из-за вставки колонки B)
+    COL_DAY_START  = 49  # AY: первое число (было 48, сдвинулось на +1 из-за вставки колонки B)
     COL_DAY_STEP   = 2
 
     DEPT_MAP = load_departments()
