@@ -101,13 +101,29 @@ def is_employee_row(row):
     C (2) — Подразделение
     D (3) — Сотрудник (ФИО)
     E (4) — Табельный номер (0000-XXXXX)
+    Не считаем сотрудником строки, где в D не ФИО, а «Руководство …» или «Курьер …».
     """
     if row is None: return False
-    number = txt(row[1]) if len(row) > 1 else ''       # B — №
-    name = txt(row[3]) if len(row) > 3 else ''         # D — ФИО
-    personnel = txt(row[4]) if len(row) > 4 else ''    # E — Табельный
-    return bool(re.fullmatch(r'\d+', number) and name and name.lower() != 'сотрудник'
-                and re.fullmatch(r'\d{4}-\d{5}', personnel))
+    number = txt(row[1]) if len(row) > 1 else ''
+    name = txt(row[3]) if len(row) > 3 else ''
+    personnel = txt(row[4]) if len(row) > 4 else ''
+    if not re.fullmatch(r'\d+', number):
+        return False
+    if not re.fullmatch(r'\d{4}-\d{5}', personnel):
+        return False
+    if not name or name.lower() == 'сотрудник':
+        return False
+    low = name.lower().replace('ё', 'е')
+    for kw in ('руководство', 'курьер'):
+        if kw in low:
+            return False
+    words = [w for w in re.split(r'\s+', name) if w]
+    if len(words) < 2:
+        return False
+    for w in words:
+        if len(w) < 2 or not w[0].isupper():
+            return False
+    return True
 
 def strict_day(rule, missing, start, end, rv, skud):
     z = {'plan': 0, 'fact': 0, 'late': 0, 'early': 0, 'late_leave': 0,
@@ -147,10 +163,6 @@ def strict_day(rule, missing, start, end, rv, skud):
     return z
 
 def load_departments():
-    """
-    Читает Справочник.xlsx (лист «Справочник»).
-    Возвращает словарь {Наименование подразделения (колонка B): Департамент (колонка F)}.
-    """
     path = BASE_DIR / 'Справочник.xlsx'
     if not path.exists():
         return {}
@@ -172,38 +184,14 @@ def load_departments():
 
 def prepare_upload(src_path, dst_path):
     """
-    Читает исходную выгрузку.
-    Колонка A в исходнике ПУСТАЯ — используем её как «Департамент».
-    Заполняем её через справочник: подразделение (C) → департамент.
-    Сохраняем в dst_path.
-
-    Исходная структура:
-        A — (пустая)
-        B — №
-        C — Подразделение
-        D — Сотрудник
-        E — Табельный
-        F — Должность
-        G — Дата приема
-        H — Дата увольнения
-        I — Формат работы
-        J — График
-        ... далее дни месяца
-
-    Финальная структура (только A заполнена):
-        A — Департамент   ← заполнена
-        B — №
-        C — Подразделение
-        D — Сотрудник
-        E — Табельный
-        ... далее без сдвигов
+    Заполняет пустую колонку A «Департаментом» через справочник:
+    C (Подразделение) → F (Департамент в справочнике) → A (в выгрузке).
     """
     DEPT_MAP = load_departments()
 
-    wb = load_workbook(src_path, data_only=False)
+    wb = load_workbook(src_path, data_only=False, keep_links=False)
     ws = wb.active
 
-    # Ищем строку с шапкой (там где «№» в колонке B)
     header_row = None
     for r in range(1, min(20, ws.max_row) + 1):
         v = ws.cell(row=r, column=2).value
@@ -211,14 +199,11 @@ def prepare_upload(src_path, dst_path):
             header_row = r
             break
     if header_row is None:
-        header_row = 4  # fallback
+        header_row = 4
 
-    # Заголовок колонки A
     ws.cell(row=header_row, column=1).value = 'Департамент'
 
-    # Заполняем департамент для каждой строки данных
     for r in range(header_row + 1, ws.max_row + 1):
-        # Подразделение в колонке C (индекс 3, 1-based)
         unit = txt(ws.cell(row=r, column=3).value)
         if not unit:
             continue
@@ -230,17 +215,16 @@ def prepare_upload(src_path, dst_path):
 
 def analyze(path):
     """
-    Структура колонок (после prepare_upload):
-    A (0)  — Департамент (заполнен)
+    A (0)  — Департамент
     B (1)  — №
     C (2)  — Подразделение
     D (3)  — Сотрудник (ФИО)
-    E (4)  — Табельный номер
+    E (4)  — Табельный
     F (5)  — Должность
     G (6)  — Дата приема
     H (7)  — Дата увольнения
     I (8)  — Формат работы
-    J (9)  — График работы
+    J (9)  — График
     K (10) — Болезнь (РВ)
     L (11) — Болезнь (СКУД)
     ...
@@ -249,16 +233,15 @@ def analyze(path):
     AG (32) — 01 Сб — СКУД
     ...
     """
-    # ---- КОНСТАНТЫ ИНДЕКСОВ КОЛОНОК (0-based) ----
-    COL_DEPARTMENT = 0   # A: Департамент (заполнен prepare_upload)
-    COL_NUMBER     = 1   # B: №
-    COL_UNIT       = 2   # C: Подразделение
-    COL_NAME       = 3   # D: ФИО
-    COL_PERSONNEL  = 4   # E: Табельный
-    COL_POSITION   = 5   # F: Должность
-    COL_FORMAT     = 8   # I: Формат работы
-    COL_SCHEDULE   = 9   # J: График
-    COL_DAY_START  = 31  # AF: 01 Сб — РВ
+    COL_DEPARTMENT = 0
+    COL_NUMBER     = 1
+    COL_UNIT       = 2
+    COL_NAME       = 3
+    COL_PERSONNEL  = 4
+    COL_POSITION   = 5
+    COL_FORMAT     = 8
+    COL_SCHEDULE   = 9
+    COL_DAY_START  = 31
     COL_DAY_STEP   = 2
 
     DEPT_MAP = load_departments()
@@ -266,7 +249,6 @@ def analyze(path):
     ws = wb.active
     rows_iter = ws.iter_rows(values_only=True)
 
-    # Определяем период (год, месяц) из шапки
     year, month = datetime.now().year, datetime.now().month
     for idx, row in enumerate(rows_iter):
         joined = ' '.join(txt(c) for c in row[:15])
@@ -287,12 +269,10 @@ def analyze(path):
             emp_row = window[0]
             data_row = window[2]
 
-            # --- Департамент: приоритет — из колонки A, fallback — справочник ---
             department_direct = txt(emp_row[COL_DEPARTMENT]) if len(emp_row) > COL_DEPARTMENT else ''
             unit = txt(emp_row[COL_UNIT]) if len(emp_row) > COL_UNIT else ''
             department = department_direct or DEPT_MAP.get(unit, '') or unit or NO_DEPT
 
-            # --- Остальные поля ---
             number    = txt(emp_row[COL_NUMBER])    if len(emp_row) > COL_NUMBER    else ''
             name      = txt(emp_row[COL_NAME])      if len(emp_row) > COL_NAME      else ''
             personnel = txt(emp_row[COL_PERSONNEL]) if len(emp_row) > COL_PERSONNEL else ''
@@ -306,12 +286,8 @@ def analyze(path):
             is_missing = rule['type'] == 'missing'
 
             e = {
-                'number': number,
-                'name': name,
-                'position': position,
-                'department': department,
-                'unit': unit,
-                'personnel': personnel,
+                'number': number, 'name': name, 'position': position,
+                'department': department, 'unit': unit, 'personnel': personnel,
                 'work_format': work_format,
                 'schedule': raw_schedule or 'График не указан',
                 'rule': rule,
@@ -445,13 +421,13 @@ DASH_DESCRIPTIONS = [
     ('Сотрудники', 'Количество сотрудников.'),
     ('План (РВ), ч', 'Сумма нормы РВ по рабочим дням.'),
     ('Факт, ч', 'Фактически отработано от прихода до ухода.'),
-    ('Разница план/факт, ч', 'Факт минус план. Складывается из поздних уходов (+, опозданий и ранних уходов (-).'),
+    ('Разница план/факт, ч', 'Факт минус план.'),
     ('Опоздания, ч', 'Суммарное время опозданий.'),
     ('Ранние уходы, ч', 'Суммарное время ранних уходов.'),
     ('Поздние уходы, ч', 'Суммарное время после планового окончания смены.'),
     ('Вне графика, ч', 'Работа в дни, когда смена по графику не запланирована (РВ=0).'),
     ('Ранний приход, ч (справочно)', 'Справочно, в факт и разницу не входит.'),
-    ('Потенциально удалённые, ч', 'Норма РВ дней без интервала и СКУД. В план/факт не входят.'),
+    ('Потенциально удалённые, ч', 'Норма РВ дней без интервала и СКУД.'),
     ('Свободный график, ч', 'Время по свободному графику, без нормы.'),
 ]
 
@@ -461,6 +437,8 @@ COL_TOGGLES = [
     ('plan',      'План (РВ), ч'),
     ('fact',      'Факт, ч'),
     ('diff',      'Количество часов недоработки по графику'),
+    ('norm',      'Статус нормы'),
+    ('pct',       'Отклонение, %'),
     ('late',      'Опоздания, ч'),
     ('early',     'Ранние уходы, ч'),
     ('off',       'Вне графика, ч'),
@@ -516,12 +494,6 @@ def filter_bar(tab, emps, dept_sel='', unit_sel='', emp_sel='', show_employee=Fa
         '<a class="btn btn-ghost" href="/?tab=' + esc(tab) + '">Сбросить</a>'
         '</form></div>'
     )
-
-def cols_state(args):
-    raw = args.get('cols', '')
-    if not raw:
-        return set(ALL_COLS)
-    return {k for k in raw.split(',') if k in ALL_COLS}
 
 def render_cols_form(tab, active, dept='', unit=''):
     boxes = []
@@ -581,7 +553,6 @@ def render_pie(title, parts):
            '<text x="80" y="98" text-anchor="middle" font-size="16" font-weight="700" fill="#1b2430">'
            + fm(total) + '</text>'
            '</svg>')
-
     legend = []
     for label, v, color in parts:
         pct = (v / total * 100) if total else 0
@@ -737,20 +708,34 @@ def export_dashboard_xlsx(emps, days, group_by, filter_dept, filter_unit, path, 
     thin = Side(style='thin', color='D9DEE3')
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     title = 'Департамент' if group_by == 'department' else 'Подразделение'
-    ws.append([title] + [n for n, _ in DASH_DESCRIPTIONS])
+
+    ws.append([title] + [n for n, _ in DASH_DESCRIPTIONS] + ['Статус нормы', 'Отклонение, %'])
     for cell in ws[1]:
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         cell.border = border
     ws.row_dimensions[1].height = 48
+
     def hrs(v): return round(v / 60, 2)
+
     def line(label, r):
+        diff_min = r['diff']
+        if diff_min < -5:
+            norm_status = 'Недоработка'
+        elif diff_min > 5:
+            norm_status = 'Переработка'
+        else:
+            norm_status = 'Норма'
+        pct = round((r['diff'] / r['plan'] * 100), 1) if r['plan'] else 0.0
         return [label, r['emp'], hrs(r['plan']), hrs(r['fact']), hrs(r['diff']),
                 hrs(r['late']), hrs(r['early']), hrs(r['late_leave']), hrs(r['off']),
-                hrs(r['early_arr']), hrs(r['remote_rv']), hrs(r['free'])]
+                hrs(r['early_arr']), hrs(r['remote_rv']), hrs(r['free']),
+                norm_status, pct]
+
     red = PatternFill(start_color='FDECEC', end_color='FDECEC', fill_type='solid')
     grn = PatternFill(start_color='E3F6E9', end_color='E3F6E9', fill_type='solid')
+
     for r in rows:
         ws.append(line(r['name'], r))
         n = ws.max_row
@@ -758,19 +743,23 @@ def export_dashboard_xlsx(emps, days, group_by, filter_dept, filter_unit, path, 
             ws.cell(n, 6).fill = red
         elif r['diff'] > 0:
             ws.cell(n, 6).fill = grn
+
     ws.append(line('ИТОГО', total))
     n = ws.max_row
-    for c in range(1, 13):
+    for c in range(1, 15):
         ws.cell(n, c).font = Font(bold=True)
+
     for r in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in r:
             cell.border = border
             if cell.column > 1:
                 cell.alignment = Alignment(horizontal='center')
+
     ws.freeze_panes = 'B2'
     ws.column_dimensions['A'].width = 34
-    for c in range(2, 13):
+    for c in range(2, 15):
         ws.column_dimensions[get_column_letter(c)].width = 16
+
     wb.save(path)
 
 def export_dynamics_xlsx(history_data, path, filter_dept='', filter_unit=''):
@@ -890,7 +879,12 @@ def load_state():
     try:
         with open(STATE_FILE, 'rb') as f:
             return pickle.load(f)
-    except Exception:
+    except Exception as ex:
+        print(f'[load_state] error: {ex}')
+        try:
+            STATE_FILE.unlink()
+        except Exception:
+            pass
         return None
 
 CSS = (
@@ -1063,6 +1057,26 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
         s = e['summary']
         status = ('<span class="tag tag-gray">Увольнение сотрудника</span>'
                   if s['termination'] else '<span class="tag tag-green">Сформирован</span>')
+
+        diff_min = s['fact'] - s['plan']
+        if diff_min < -5:
+            norm_status = '<span class="tag tag-red">Недоработка</span>'
+            norm_class = 'neg strong'
+        elif diff_min > 5:
+            norm_status = '<span class="tag" style="background:#fff6df;color:#8a5a00">Переработка</span>'
+            norm_class = 'pos strong'
+        else:
+            norm_status = '<span class="tag tag-green">Норма</span>'
+            norm_class = 'grey'
+
+        pct = round((diff_min / s['plan'] * 100), 1) if s['plan'] else 0.0
+        if abs(pct) <= 1:
+            pct_class = 'grey'
+        elif abs(pct) <= 5:
+            pct_class = 'pos' if pct > 0 else 'neg'
+        else:
+            pct_class = 'neg strong' if pct < 0 else 'pos strong'
+
         sr.append(
             '<tr>'
             '<td>' + esc(e['number']) + '</td>'
@@ -1080,6 +1094,9 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
             '<td>' + str(s['late_leave']) + '</td>'
             '<td>' + fh(s['above']) + '</td>'
             '<td>' + fh(s['below']) + '</td>'
+            '<td class="' + norm_class + '">' + fsigned(diff_min) + '</td>'
+            '<td class="' + pct_class + '">' + f'{pct:+.1f}%' + '</td>'
+            '<td>' + norm_status + '</td>'
             '<td>' + status + '</td>'
             '</tr>')
 
@@ -1110,7 +1127,9 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
              '<th>Подразделение</th><th>Формат работы</th><th>График</th>'
              '<th>Рабочие дни</th><th>Удалённые дни</th><th>Опоздания</th><th>Ранние уходы</th>'
              '<th>Аномально ранние</th><th>Поздние уходы</th><th>СКУД выше РВ</th>'
-             '<th>СКУД ниже РВ</th><th>Статус</th></tr>')
+             '<th>СКУД ниже РВ</th>'
+             '<th>Отклонение, ч</th><th>Отклонение, %</th><th>Статус нормы</th>'
+             '<th>Статус</th></tr>')
 
     return (filters +
             '<div class="card"><div class="grid">'
@@ -1171,6 +1190,7 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
     head_cells.append('<th>Сотрудники</th>')
     col_titles = {
         'plan': 'План (РВ), ч', 'fact': 'Факт, ч', 'diff': 'Разница, ч',
+        'norm': 'Статус нормы', 'pct': 'Отклонение, %',
         'late': 'Опоздания, ч', 'early': 'Ранние уходы, ч',
         'late_leave': 'Поздние уходы, ч', 'off': 'Вне графика, ч',
         'early_arr': 'Ранний приход, ч', 'remote_rv': 'Потенц. удалённые, ч',
@@ -1189,6 +1209,23 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
                 continue
             if k == 'diff':
                 cells.append('<td class="' + sgn(r['diff']) + ' strong">' + fsigned(r['diff']) + '</td>')
+            elif k == 'norm':
+                dm = r['diff']
+                if dm < -5:
+                    cells.append('<td><span class="tag tag-red">Недоработка</span></td>')
+                elif dm > 5:
+                    cells.append('<td><span class="tag" style="background:#fff6df;color:#8a5a00">Переработка</span></td>')
+                else:
+                    cells.append('<td><span class="tag tag-green">Норма</span></td>')
+            elif k == 'pct':
+                pct = round((r['diff'] / r['plan'] * 100), 1) if r['plan'] else 0.0
+                if abs(pct) <= 1:
+                    cl = 'grey'
+                elif abs(pct) <= 5:
+                    cl = 'pos' if pct > 0 else 'neg'
+                else:
+                    cl = 'neg strong' if pct < 0 else 'pos strong'
+                cells.append('<td class="' + cl + '">' + f'{pct:+.1f}%' + '</td>')
             elif k in ('early_arr', 'remote_rv', 'free'):
                 cells.append('<td class="grey">' + fm(r[k]) + '</td>')
             else:
@@ -1360,10 +1397,8 @@ def upload():
     STATE['status'] = 'processing'
     STATE['error'] = None
     try:
-        # Заполняем пустую колонку A «Департаментом» через справочник
         prepared = UPLOAD_DIR / 'prepared.xlsx'
         prepare_upload(LAST_FILE, prepared)
-        # Анализируем уже подготовленный файл
         emps, days, meta = analyze(prepared)
 
         STATE['employees'] = emps
