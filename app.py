@@ -204,7 +204,26 @@ def analyze(path):
     wb = load_workbook(path, data_only=True, read_only=True, keep_links=False)
     ws = wb.active
     rows_iter = ws.iter_rows(values_only=True)
+    
+    # ===== ОТЛАДКА: смотрим первые 10 строк =====
+    print('=' * 60)
+    print('ОТЛАДКА ВЫГРУЗКИ: первые 10 строк')
+    print('=' * 60)
+    debug_iter = ws.iter_rows(values_only=True)
+    for i, r in enumerate(debug_iter):
+        if i >= 10:
+            break
+        cells = []
+        for j, c in enumerate(r[:15]):
+            v = str(c)[:25] if c is not None else ''
+            cells.append(f'[{j}]{v}')
+        print(f'Строка {i}: ' + ' | '.join(cells))
+    print('=' * 60)
+    
+    # Перезапускаем итератор
+    rows_iter = ws.iter_rows(values_only=True)
 
+    
     # Определяем период (год, месяц) из шапки
     year, month = datetime.now().year, datetime.now().month
     for idx, row in enumerate(rows_iter):
