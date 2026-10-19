@@ -184,6 +184,11 @@ def find_day_start(path):
     return None
 
 def analyze(path):
+    COL_DAY_START = find_day_start(path)
+    if COL_DAY_START is None:
+        COL_DAY_START = 44
+        print(f'[analyze] ВНИМАНИЕ: колонка не найдена, используем fallback {COL_DAY_START}')
+
     wb = load_workbook(path, data_only=True, read_only=False)
     ws = wb.active
     header_row = 4
@@ -201,18 +206,8 @@ def analyze(path):
         elif val == 'должность': col_idx['position'] = c - 1
         elif val == 'формат работы': col_idx['format'] = c - 1
         elif val == 'график работы': col_idx['schedule'] = c - 1
-        elif 'болезн' in val: col_idx['sick'] = c - 1
-        elif 'командиров' in val: col_idx['trip'] = c - 1
-        elif 'отпуск' in val and 'учеб' not in val and 'берем' not in val and 'уход' not in val: col_idx['vacation'] = c - 1
-        elif re.match(r'^0?1(\s+\S+)?$', val) or re.match(r'^1(\s+\S+)?$', val): col_idx['day_start'] = c - 1
 
-    if 'day_start' not in col_idx:
-        print("[analyze] ОШИБКА: Не найдена колонка начала дней (01, 02...)")
-        return [], [], {}
-    
-    COL_DAY_START = col_idx['day_start']
     COL_DAY_STEP = 2
-
     rows_iter = ws.iter_rows(values_only=True)
     year, month = datetime.now().year, datetime.now().month
     for idx, row in enumerate(rows_iter):
@@ -281,14 +276,8 @@ def analyze(path):
             for day in range(1, 32):
                 c = COL_DAY_START + (day - 1) * COL_DAY_STEP
                 if c + 1 >= len(emp_row) or c + 1 >= len(data_row): break
-                
                 absence_type = ''
-                for key in ('sick', 'trip', 'vacation'):
-                    idx = col_idx.get(key)
-                    if idx is not None and idx < len(emp_row) and num(emp_row[idx]) > 0:
-                        absence_type = key
-                        break
-
+                        
                 try: date = datetime(year, month, day).strftime('%d.%m.%Y')
                 except: continue
                 
@@ -305,9 +294,7 @@ def analyze(path):
                 
                 total_plan_min += m['plan']; total_fact_min += m['fact']; total_absent_min += m['absent']; total_off_min += m['off']
 
-                if absence_type:
-                    statuses = ['Отпуск/Болезнь/Командировка']
-                elif rv > 0:
+                if rv > 0:
                     if not absence_type: e['summary']['work'] += 1
                     if skud > 0:
                         d = (skud - rv) * 60
@@ -470,7 +457,7 @@ def export_xlsx(emps, days, path):
         de.cell(r, 1).border = border; de.cell(r, 2).border = border
     de.column_dimensions['A'].width = 28; de.column_dimensions['B'].width = 100
     wb.save(path)
-
+    
 def dashboard_data(emps, days, group_by='department', filter_dept='', filter_unit=''):
     agg = {}
     for e in emps:
