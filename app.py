@@ -492,6 +492,7 @@ COL_TOGGLES = [
     ('remote_rv', 'Потенциально удалённые, ч'),
     ('free',      'Свободный график, ч'),
 ]
+ALL_COLS = {k for k, _ in COL_TOGGLES}
 
 def safe_filename(name):
     cleaned = re.sub(r'[\\/:*?"<>|]', '_', name).strip()
