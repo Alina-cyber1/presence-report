@@ -127,27 +127,34 @@ def is_employee_row(row):
 
 def strict_day(rule, missing, start, end, rv, skud):
     z = {'plan': 0, 'fact': 0, 'late': 0, 'early': 0, 'late_leave': 0,
-         'off': 0, 'early_arr': 0, 'remote_rv': 0, 'free': 0}
+         'off': 0, 'early_arr': 0, 'remote_rv': 0, 'free': 0, 'absent': 0}
     has_int = start is not None and end is not None
     presence = max(end - start, 0) if has_int else round(skud * 60)
+
     if rule['type'] == 'free':
         if has_int or skud > 0: z['free'] = presence
         return z
+
     if rv <= 0:
         if has_int or skud > 0: z['off'] = presence
         return z
+
     planm = round(rv * 60)
+    z['plan'] = planm  # План есть всегда, если есть норма
+
+    # Если есть норма, но нет ни интервала, ни СКУД — это прогул/отсутствие
     if not has_int and skud <= 0:
-        z['remote_rv'] = planm
+        z['absent'] = planm
         return z
+
     if missing:
-        z['plan'] = planm
         z['fact'] = round(skud * 60) if skud > 0 else presence
         return z
-    z['plan'] = planm
+
     if rule['start'] is None:
         z['fact'] = presence
         return z
+
     ps = rule['start']
     pe = ps + planm
     if has_int:
@@ -161,7 +168,6 @@ def strict_day(rule, missing, start, end, rv, skud):
     else:
         z['fact'] = round(skud * 60)
     return z
-
 def load_departments():
     path = BASE_DIR / 'Справочник.xlsx'
     if not path.exists():
@@ -214,25 +220,16 @@ def prepare_upload(src_path, dst_path):
     wb.close()
 
 def find_day_start(path):
-    """
-    Открывает файл и ищет колонку, с которой начинаются дни.
-    Ищет текст «Разница СБ и плановых часов» и берет следующую колонку.
-    Возвращает Python-индекс (0-based) для COL_DAY_START.
-    """
     try:
         wb = load_workbook(path, data_only=True, read_only=False)
         ws = wb.active
-        # Ищем в первых 15 строках
         for r_idx in range(1, min(15, ws.max_row) + 1):
             for c_idx in range(1, ws.max_column + 1):
                 v = txt(ws.cell(row=r_idx, column=c_idx).value)
-                low = v.lower().replace('ё', 'е')
-                if 'разница' in low and 'сб' in low:
+                # Ищем колонку с первым днем (01, 01 Сб и т.д.)
+                if re.match(r'^0?1(\s+\S+)?$', v):
                     wb.close()
-                    # Нашли колонку с текстом. Следующая колонка = начало дней.
-                    # c_idx (1-based) -> следующий индекс (1-based) = c_idx + 1
-                    # Python (0-based) = (c_idx + 1) - 1 = c_idx
-                    return c_idx
+                    return c_idx - 1  # 0-based индекс для Python
         wb.close()
     except Exception as ex:
         print(f'[find_day_start] error: {ex}')
@@ -472,28 +469,29 @@ DASH_DESCRIPTIONS = [
     ('Опоздания, ч', 'Суммарное время опозданий.'),
     ('Ранние уходы, ч', 'Суммарное время ранних уходов.'),
     ('Поздние уходы, ч', 'Суммарное время после планового окончания смены.'),
+    ('Отсутствие/Прогулы, ч', 'Норма часов в дни, когда не было ни интервала, ни СКУД.'),
     ('Вне графика, ч', 'Работа в дни, когда смена по графику не запланирована (РВ=0).'),
     ('Ранний приход, ч (справочно)', 'Справочно, в факт и разницу не входит.'),
-    ('Потенциально удалённые, ч', 'Норма РВ дней без интервала и СКУД.'),
+    ('Потенциально удалённые, ч', 'Норма РВ дней без интервала и СКУД (для гибридов/удаленки).'),
     ('Свободный график, ч', 'Время по свободному графику, без нормы.'),
 ]
 
-DKEYS = ['plan', 'fact', 'late', 'early', 'late_leave', 'off', 'early_arr', 'remote_rv', 'free']
+DKEYS = ['plan', 'fact', 'late', 'early', 'late_leave', 'off', 'early_arr', 'remote_rv', 'free', 'absent']
 
 COL_TOGGLES = [
     ('plan',      'План (РВ), ч'),
     ('fact',      'Факт, ч'),
-    ('diff',      'Количество часов недоработки по графику'),
+    ('diff',      'Разница, ч'),
     ('norm',      'Статус нормы'),
     ('pct',       'Отклонение, %'),
     ('late',      'Опоздания, ч'),
     ('early',     'Ранние уходы, ч'),
+    ('absent',    'Отсутствие/Прогулы, ч'),
     ('off',       'Вне графика, ч'),
     ('early_arr', 'Ранний приход, ч (справочно)'),
     ('remote_rv', 'Потенциально удалённые, ч'),
     ('free',      'Свободный график, ч'),
 ]
-ALL_COLS = {k for k, _ in COL_TOGGLES}
 
 def safe_filename(name):
     cleaned = re.sub(r'[\\/:*?"<>|]', '_', name).strip()
@@ -1273,6 +1271,8 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
                 else:
                     cl = 'neg strong' if pct < 0 else 'pos strong'
                 cells.append('<td class="' + cl + '">' + f'{pct:+.1f}%' + '</td>')
+            elif k == 'absent':
+                cells.append('<td class="neg strong">' + fm(r[k]) + '</td>')
             elif k in ('early_arr', 'remote_rv', 'free'):
                 cells.append('<td class="grey">' + fm(r[k]) + '</td>')
             else:
