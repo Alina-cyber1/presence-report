@@ -27,46 +27,34 @@ MONTHS_RU = {
     'июл': 7, 'август': 8, 'сентябр': 9, 'октябр': 10, 'ноябр': 11, 'декабр': 12
 }
 
-def txt(v):
-    return '' if v is None else str(v).strip()
-
+def txt(v): return '' if v is None else str(v).strip()
 def num(v):
-    try:
-        return float(txt(v).replace(' ', '').replace(',', '.'))
-    except Exception:
-        return 0.0
-
+    try: return float(txt(v).replace(' ', '').replace(',', '.'))
+    except Exception: return 0.0
 def hm(v):
     m = re.search(r'(?<!\d)(\d{1,2})[:\-.](\d{2})(?!\d)', txt(v))
     return int(m.group(1)) * 60 + int(m.group(2)) if m else None
-
 def fm(v):
     if v is None: return '—'
     sign = '-' if v < 0 else ''
     v = abs(round(v))
     return f'{sign}{v // 60:02d}:{v % 60:02d}'
-
 def fh(v): return fm(v * 60)
 def fsigned(v): return ('+' if round(v) > 0 else '') + fm(v)
 def esc(v):
-    return (txt(v).replace('&', '&amp;').replace('<', '&lt;')
-            .replace('>', '&gt;').replace(chr(34), '&quot;'))
+    return (txt(v).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace(chr(34), '&quot;'))
 
 def parse_interval(v):
     m = re.search(r'(\d{1,2}[:\-.]\d{2})\s*[-–—]\s*(\d{1,2}[:\-.]\d{2})', txt(v))
     if not m: return None, None
     start, end = hm(m.group(1)), hm(m.group(2))
-    if start is not None and end is not None and end < start:
-        end += 1440
+    if start is not None and end is not None and end < start: end += 1440
     return start, end
 
 def parse_schedule(v):
-    source = txt(v)
-    low = source.lower().replace('ё', 'е')
-    if not source:
-        return {'type': 'missing', 'start': None, 'hours': None}
-    if 'свободн' in low:
-        return {'type': 'free', 'start': None, 'hours': None}
+    source = txt(v); low = source.lower().replace('ё', 'е')
+    if not source: return {'type': 'missing', 'start': None, 'hours': None}
+    if 'свободн' in low: return {'type': 'free', 'start': None, 'hours': None}
     m = re.search(r'с\s*(\d{1,2})\s*[-:]\s*(\d{2})', low)
     start = int(m.group(1)) * 60 + int(m.group(2)) if m else None
     m = re.search(r'\((\d+(?:[\.,]\d+)?)\s*час', low)
@@ -84,13 +72,10 @@ def parse_period(head_text):
     low = txt(head_text).lower().replace('ё', 'е')
     month = None
     for key, val in MONTHS_RU.items():
-        if key in low:
-            month = val
-            break
+        if key in low: month = val; break
     m = re.search(r'20\d{2}', low)
     year = int(m.group()) if m else datetime.now().year
-    if month is None:
-        month = datetime.now().month
+    if month is None: month = datetime.now().month
     return year, month
 
 def is_employee_row(row):
@@ -111,41 +96,28 @@ def is_employee_row(row):
     return True
 
 def strict_day(rule, missing, start, end, rv, skud, acc_type, absence_type=''):
-    z = {'plan': 0, 'fact': 0, 'late': 0, 'early': 0, 'late_leave': 0,
-         'off': 0, 'early_arr': 0, 'remote_rv': 0, 'free': 0, 'absent': 0}
-    
-    # Если это отпуск/болезнь/командировка — снимаем план и ничего не считаем
-    if absence_type:
-        return z
-
+    z = {'plan': 0, 'fact': 0, 'late': 0, 'early': 0, 'late_leave': 0, 'off': 0, 'early_arr': 0, 'remote_rv': 0, 'free': 0, 'absent': 0}
+    if absence_type: return z
     has_int = start is not None and end is not None
     presence = max(end - start, 0) if has_int else round(skud * 60)
-
     if rule['type'] == 'free':
         if has_int or skud > 0: z['free'] = presence
         return z
-
     if rv <= 0:
         if has_int or skud > 0: z['off'] = presence
         return z
-
     planm = round(rv * 60)
     z['plan'] = planm
-
-    # Если нет ни интервала, ни СКУД (человека нет в офисе)
     if not has_int and skud <= 0:
-        z['fact'] = planm  # Засчитываем как удаленку, чтобы не ломать департамент
-        z['absent'] = planm # Но в отчете показываем, что его не было
+        z['fact'] = planm
+        z['absent'] = planm
         return z
-
     if missing:
         z['fact'] = round(skud * 60) if skud > 0 else presence
         return z
-
     if rule['start'] is None:
         z['fact'] = presence
         return z
-
     ps = rule['start']
     pe = ps + planm
     if has_int:
@@ -174,8 +146,7 @@ def load_departments():
             if name and dept and not dept.startswith('='): m[name] = dept
         wb.close()
         return m
-    except Exception:
-        return {}
+    except Exception: return {}
 
 def prepare_upload(src_path, dst_path):
     DEPT_MAP = load_departments()
@@ -200,8 +171,6 @@ def prepare_upload(src_path, dst_path):
 def analyze(path):
     wb = load_workbook(path, data_only=True, read_only=False)
     ws = wb.active
-    
-    # 1. Ищем шапку по названиям колонок
     header_row = 4
     for r in range(1, 20):
         if txt(ws.cell(row=r, column=2).value) == '№':
@@ -220,13 +189,12 @@ def analyze(path):
         elif 'болезн' in val: col_idx['sick'] = c - 1
         elif 'командиров' in val: col_idx['trip'] = c - 1
         elif 'отпуск' in val and 'учеб' not in val and 'берем' not in val and 'уход' not in val: col_idx['vacation'] = c - 1
-        elif re.fullmatch(r'0?1(\s+\S+)?', val): col_idx['day_start'] = c - 1
+        elif re.match(r'^0?1(\s+\S+)?$', val) or re.match(r'^1(\s+\S+)?$', val): col_idx['day_start'] = c - 1
 
     if 'day_start' not in col_idx:
         print("[analyze] ОШИБКА: Не найдена колонка начала дней (01, 02...)")
         return [], [], {}
     
-    print(f"[analyze] Начало дней найдено в колонке: {col_idx['day_start']}")
     COL_DAY_START = col_idx['day_start']
     COL_DAY_STEP = 2
 
@@ -263,9 +231,7 @@ def analyze(path):
                         break
                 j += 1
 
-            if not data_row:
-                i += 1
-                continue
+            if not data_row: i += 1; continue
 
             department_direct = txt(emp_row[0])
             unit = txt(emp_row[col_idx.get('unit', 2)])
@@ -292,16 +258,10 @@ def analyze(path):
                 'work_format': work_format, 'acc_type': acc_type,
                 'schedule': raw_schedule or 'График не указан',
                 'rule': rule,
-                'summary': {'work': 0, 'remote': 0, 'late': 0, 'early': 0, 'anomaly': 0,
-                            'late_leave': 0, 'above': 0.0, 'below': 0.0, 'off': 0,
-                            'problems': 0, 'excluded': False, 'termination': is_missing,
-                            'plan': 0, 'fact': 0, 'absent': 0}
+                'summary': {'work': 0, 'remote': 0, 'late': 0, 'early': 0, 'anomaly': 0, 'late_leave': 0, 'above': 0.0, 'below': 0.0, 'off': 0, 'problems': 0, 'excluded': False, 'termination': is_missing, 'plan': 0, 'fact': 0, 'absent': 0}
             }
 
-            total_plan_min = 0
-            total_fact_min = 0
-            total_absent_min = 0
-            total_off_min = 0
+            total_plan_min, total_fact_min, total_absent_min, total_off_min = 0, 0, 0, 0
 
             for day in range(1, 32):
                 c = COL_DAY_START + (day - 1) * COL_DAY_STEP
@@ -328,16 +288,12 @@ def analyze(path):
                 
                 m = strict_day(rule, is_missing, start, end, rv, skud, acc_type, absence_type)
                 
-                total_plan_min += m['plan']
-                total_fact_min += m['fact']
-                total_absent_min += m['absent']
-                total_off_min += m['off']
+                total_plan_min += m['plan']; total_fact_min += m['fact']; total_absent_min += m['absent']; total_off_min += m['off']
 
                 if absence_type:
                     statuses = ['Отпуск/Болезнь/Командировка']
-                    e['summary']['work'] += 1
                 elif rv > 0:
-                    e['summary']['work'] += 1
+                    if not absence_type: e['summary']['work'] += 1
                     if skud > 0:
                         d = (skud - rv) * 60
                         if d > 5: statuses.append('Отклонение длительности СКУД от РВ: +' + fm(d)); e['summary']['above'] += skud - rv
@@ -345,26 +301,14 @@ def analyze(path):
                         else: statuses.append('СКУД соответствует РВ')
                     else:
                         if acc_type == 'Удаленка':
-                            statuses = ['Удалённая работа']
-                            kind = 'remote'
-                            e['summary']['remote'] += 1
+                            statuses = ['Удалённая работа']; kind = 'remote'; e['summary']['remote'] += 1
                         else:
-                            statuses = ['Проблема: нет полного интервала']
-                            kind = 'problem'
-                            e['summary']['problems'] += 1
+                            statuses = ['Проблема: нет полного интервала']; kind = 'problem'; e['summary']['problems'] += 1
                 elif rv <= 0:
                     if raw or skud > 0:
-                        statuses = ['Посещение вне графика / переработка']
-                        kind = 'off_schedule'
-                        e['summary']['off'] += 1
+                        statuses = ['Посещение вне графика / переработка']; kind = 'off_schedule'; e['summary']['off'] += 1
 
-                days.append({
-                    'number': number, 'name': name, 'position': position,
-                    'department': department, 'unit': unit,
-                    'work_format': work_format, 'date': date,
-                    'rv': rv, 'skud': skud, 'interval': txt(raw) or '—',
-                    'plan': plan, 'statuses': statuses, 'kind': kind, 'm': m
-                })
+                days.append({'number': number, 'name': name, 'position': position, 'department': department, 'unit': unit, 'work_format': work_format, 'date': date, 'rv': rv, 'skud': skud, 'interval': txt(raw) or '—', 'plan': plan, 'statuses': statuses, 'kind': kind, 'm': m})
 
             e['summary']['plan'] = round(total_plan_min / 60, 2)
             e['summary']['fact'] = round(total_fact_min / 60, 2)
@@ -382,7 +326,7 @@ def analyze(path):
 COLUMN_DESCRIPTIONS = [
     ('Рабочие дни', 'Количество дней, когда по графику было запланировано присутствие.'),
     ('Удалённые дни', 'Дни без визита в офис и без СКУД.'),
-    ('Опоздания', 'Дни прихода позже начала смены. С первой минуты, без допуска.'),
+    ('Поздний приход', 'Дни прихода позже начала смены. С первой минуты, без допуска.'),
     ('Ранние уходы', 'Дни ухода раньше планового окончания. С первой минуты.'),
     ('Аномально ранние приходы', 'Приход раньше плана более чем на 10 минут.'),
     ('Поздние уходы', 'Задержка после планового окончания более чем на 5 минут.'),
@@ -396,10 +340,10 @@ DASH_DESCRIPTIONS = [
     ('План (РВ), ч', 'Сумма нормы РВ по рабочим дням.'),
     ('Факт, ч', 'Фактически отработано от прихода до ухода.'),
     ('Разница план/факт, ч', 'Факт минус план.'),
-    ('Опоздания, ч', 'Суммарное время опозданий.'),
+    ('Поздний приход, ч', 'Суммарное время прихода позже начала смены.'),
     ('Ранние уходы, ч', 'Суммарное время ранних уходов.'),
     ('Поздние уходы, ч', 'Суммарное время после планового окончания смены.'),
-    ('Отсутствие/Прогулы, ч', 'Норма часов в дни, когда не было ни интервала, ни СКУД.'),
+    ('Отсутствие (не в офисе), ч', 'Норма часов в дни, когда не было ни интервала, ни СКУД.'),
     ('Вне графика, ч', 'Работа в дни, когда смена по графику не запланирована (РВ=0).'),
     ('Ранний приход, ч (справочно)', 'Справочно, в факт и разницу не входит.'),
     ('Потенциально удалённые, ч', 'Норма РВ дней без интервала и СКУД (для гибридов/удаленки).'),
@@ -409,18 +353,9 @@ DASH_DESCRIPTIONS = [
 DKEYS = ['plan', 'fact', 'late', 'early', 'late_leave', 'off', 'early_arr', 'remote_rv', 'free', 'absent']
 
 COL_TOGGLES = [
-    ('plan',      'План (РВ), ч'),
-    ('fact',      'Факт, ч'),
-    ('diff',      'Разница, ч'),
-    ('norm',      'Статус нормы'),
-    ('pct',       'Отклонение, %'),
-    ('late',      'Опоздания, ч'),
-    ('early',     'Ранние уходы, ч'),
-    ('absent',    'Отсутствие/Прогулы, ч'),
-    ('off',       'Вне графика, ч'),
-    ('early_arr', 'Ранний приход, ч (справочно)'),
-    ('remote_rv', 'Потенциально удалённые, ч'),
-    ('free',      'Свободный график, ч'),
+    ('plan', 'План (РВ), ч'), ('fact', 'Факт, ч'), ('diff', 'Разница, ч'), ('norm', 'Статус нормы'), ('pct', 'Отклонение, %'),
+    ('late', 'Поздний приход, ч'), ('early', 'Ранние уходы, ч'), ('absent', 'Отсутствие (не в офисе), ч'), ('off', 'Вне графика, ч'),
+    ('early_arr', 'Ранний приход, ч (справочно)'), ('remote_rv', 'Потенциально удалённые, ч'), ('free', 'Свободный график, ч'),
 ]
 ALL_COLS = {k for k, _ in COL_TOGGLES}
 
@@ -429,9 +364,7 @@ def safe_filename(name):
     return cleaned or 'export'
 
 def filter_bar(tab, emps, dept_sel='', unit_sel='', emp_sel='', show_employee=False):
-    dept_sel = str(dept_sel or '')
-    unit_sel = str(unit_sel or '')
-    emp_sel = str(emp_sel or '')
+    dept_sel = str(dept_sel or ''); unit_sel = str(unit_sel or ''); emp_sel = str(emp_sel or '')
     depts = sorted({e.get('department', NO_DEPT) for e in emps})
     dept_opts = ''.join('<option value="' + esc(d) + '"' + (' selected' if d == dept_sel else '') + '>' + esc(d) + '</option>' for d in depts)
     units_pool = [e for e in emps if not dept_sel or e.get('department') == dept_sel]
@@ -442,22 +375,14 @@ def filter_bar(tab, emps, dept_sel='', unit_sel='', emp_sel='', show_employee=Fa
         names = sorted({e['name'] for e in emps if (not dept_sel or e.get('department') == dept_sel) and (not unit_sel or e.get('unit') == unit_sel)})
         name_opts = ''.join('<option value="' + esc(n) + '">' for n in names)
         emp_html = '<label>Сотрудник</label><input list="names" name="employee" value="' + esc(emp_sel) + '" placeholder="Начните вводить ФИО" autocomplete="off"><datalist id="names">' + name_opts + '</datalist>'
-    return ('<div class="card"><form method="get" action="/" class="select-row">'
-            '<input type="hidden" name="tab" value="' + esc(tab) + '">'
-            '<label>Департамент</label><select name="department"><option value="">Все</option>' + dept_opts + '</select>'
-            '<label>Подразделение</label><select name="unit"><option value="">Все</option>' + unit_opts + '</select>'
-            + emp_html + '<button class="btn">Показать</button><a class="btn btn-ghost" href="/?tab=' + esc(tab) + '">Сбросить</a></form></div>')
+    return ('<div class="card"><form method="get" action="/" class="select-row"><input type="hidden" name="tab" value="' + esc(tab) + '"><label>Департамент</label><select name="department"><option value="">Все</option>' + dept_opts + '</select><label>Подразделение</label><select name="unit"><option value="">Все</option>' + unit_opts + '</select>' + emp_html + '<button class="btn">Показать</button><a class="btn btn-ghost" href="/?tab=' + esc(tab) + '">Сбросить</a></form></div>')
 
 def render_cols_form(tab, active, dept='', unit=''):
     boxes = []
     for key, label in COL_TOGGLES:
         checked = ' checked' if key in active else ''
         boxes.append('<label><input type="checkbox" name="col_' + key + '" value="1"' + checked + '>' + esc(label) + '</label>')
-    return ('<div class="card"><h2>Показывать показатели</h2><form method="get" action="/" class="cols-form">'
-            '<input type="hidden" name="tab" value="' + esc(tab) + '">'
-            '<input type="hidden" name="department" value="' + esc(dept) + '">'
-            '<input type="hidden" name="unit" value="' + esc(unit) + '">' + ''.join(boxes) +
-            '<button class="btn" type="submit">Применить и сохранить</button></form></div>')
+    return ('<div class="card"><h2>Показывать показатели</h2><form method="get" action="/" class="cols-form"><input type="hidden" name="tab" value="' + esc(tab) + '"><input type="hidden" name="department" value="' + esc(dept) + '"><input type="hidden" name="unit" value="' + esc(unit) + '">' + ''.join(boxes) + '<button class="btn" type="submit">Применить и сохранить</button></form></div>')
 
 def collect_cols(args):
     any_marker = any(k.startswith('col_') for k in args.keys())
@@ -473,18 +398,12 @@ def cols_to_url(active):
 
 def render_pie(title, parts):
     total = sum(v for _, v, _ in parts) or 1
-    R = 60
-    C = 2 * 3.14159265 * R
-    svg_parts = []
-    offset = 0.0
+    R = 60; C = 2 * 3.14159265 * R; svg_parts = []; offset = 0.0
     for _, v, color in parts:
-        frac = (v / total) if total else 0
-        dash = C * frac
+        frac = (v / total) if total else 0; dash = C * frac
         svg_parts.append('<circle r="' + str(R) + '" cx="80" cy="80" fill="transparent" stroke="' + color + '" stroke-width="28" stroke-dasharray="' + f'{dash:.2f} {C - dash:.2f}' + '" stroke-dashoffset="' + f'{-offset:.2f}' + '" transform="rotate(-90 80 80)"></circle>')
         offset += dash
-    svg = ('<svg width="160" height="160" viewBox="0 0 160 160">' + ''.join(svg_parts) +
-           '<text x="80" y="78" text-anchor="middle" font-size="13" fill="#6b7684">Всего</text>'
-           '<text x="80" y="98" text-anchor="middle" font-size="16" font-weight="700" fill="#1b2430">' + fm(total) + '</text></svg>')
+    svg = ('<svg width="160" height="160" viewBox="0 0 160 160">' + ''.join(svg_parts) + '<text x="80" y="78" text-anchor="middle" font-size="13" fill="#6b7684">Всего</text><text x="80" y="98" text-anchor="middle" font-size="16" font-weight="700" fill="#1b2430">' + fm(total) + '</text></svg>')
     legend = []
     for label, v, color in parts:
         pct = (v / total * 100) if total else 0
@@ -492,74 +411,52 @@ def render_pie(title, parts):
     return ('<div class="card"><h2>' + esc(title) + '</h2><div class="pie">' + svg + '<div class="pie-legend">' + ''.join(legend) + '</div></div><p class="note">График отражает только выбранные категории.</p></div>')
 
 def export_xlsx(emps, days, path):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = 'Анализ данных'
-    headers = ['№', 'Департамент', 'Подразделение', 'Сотрудник', 'Должность', 'Табельный номер', 'Формат работы', 'График', 'Рабочие дни', 'Удалённые дни', 'Опоздания', 'Ранние уходы', 'Аномально ранние приходы', 'Поздние уходы >5 мин', 'СКУД выше РВ, ч', 'СКУД ниже РВ, ч', 'Вне графика, дней', 'Проблемные дни', 'Статус формирования отчёта']
+    wb = Workbook(); ws = wb.active; ws.title = 'Анализ данных'
+    headers = ['№', 'Департамент', 'Подразделение', 'Сотрудник', 'Должность', 'Табельный номер', 'Формат работы', 'График', 'Рабочие дни', 'Удалённые дни', 'Поздний приход', 'Ранние уходы', 'Аномально ранние приходы', 'Поздние уходы >5 мин', 'СКУД выше РВ, ч', 'СКУД ниже РВ, ч', 'Вне графика, дней', 'Проблемные дни', 'Статус формирования отчёта']
     ws.append(headers)
-    header_fill = PatternFill(start_color='2F6FED', end_color='2F6FED', fill_type='solid')
-    header_font = Font(color='FFFFFF', bold=True, size=11)
-    thin = Side(style='thin', color='D9DEE3')
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    center = Alignment(horizontal='center', vertical='center')
-    for cell in ws[1]:
-        cell.fill = header_fill; cell.font = header_font; cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True); cell.border = border
+    header_fill = PatternFill(start_color='2F6FED', end_color='2F6FED', fill_type='solid'); header_font = Font(color='FFFFFF', bold=True, size=11)
+    thin = Side(style='thin', color='D9DEE3'); border = Border(left=thin, right=thin, top=thin, bottom=thin); center = Alignment(horizontal='center', vertical='center')
+    for cell in ws[1]: cell.fill = header_fill; cell.font = header_font; cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True); cell.border = border
     ws.row_dimensions[1].height = 32
-    green = PatternFill(start_color='E3F6E9', end_color='E3F6E9', fill_type='solid')
-    gray = PatternFill(start_color='FDECEC', end_color='FDECEC', fill_type='solid')
+    green = PatternFill(start_color='E3F6E9', end_color='E3F6E9', fill_type='solid'); gray = PatternFill(start_color='FDECEC', end_color='FDECEC', fill_type='solid')
     for e in emps:
-        s = e['summary']
-        status = 'Увольнение сотрудника' if s['termination'] else 'Сформирован'
+        s = e['summary']; status = 'Увольнение сотрудника' if s['termination'] else 'Сформирован'
         ws.append([e['number'], e.get('department', ''), e.get('unit', ''), e['name'], e.get('position', ''), e['personnel'], e['work_format'], e['schedule'], s['work'], s['remote'], s['late'], s['early'], s['anomaly'], s['late_leave'], round(s['above'], 2), round(s['below'], 2), s['off'], s['problems'], status])
-        r = ws.max_row
-        ws.cell(r, 19).fill = gray if s['termination'] else green
-        for c in range(1, 20):
-            ws.cell(r, c).border = border
-            if c not in (4, 5, 7, 8): ws.cell(r, c).alignment = center
-    ws.freeze_panes = 'A2'
-    ws.auto_filter.ref = ws.dimensions
+        r = ws.max_row; ws.cell(r, 19).fill = gray if s['termination'] else green
+        for c in range(1, 20): ws.cell(r, c).border = border; ws.cell(r, c).alignment = center if c not in (4, 5, 7, 8) else Alignment()
+    ws.freeze_panes = 'A2'; ws.auto_filter.ref = ws.dimensions
     widths = {1: 8, 2: 28, 3: 28, 4: 32, 5: 28, 6: 16, 7: 16, 8: 40, 9: 11, 10: 12, 11: 11, 12: 11, 13: 14, 14: 14, 15: 12, 16: 12, 17: 12, 18: 12, 19: 22}
     for c, w in widths.items(): ws.column_dimensions[get_column_letter(c)].width = w
 
     wd = wb.create_sheet('Дни')
     dheaders = ['№', 'Департамент', 'Подразделение', 'Сотрудник', 'Должность', 'Формат работы', 'Дата', 'РВ', 'СКУД', 'Интервал', 'План', 'Статусы']
     wd.append(dheaders)
-    for cell in wd[1]:
-        cell.fill = header_fill; cell.font = header_font; cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True); cell.border = border
+    for cell in wd[1]: cell.fill = header_fill; cell.font = header_font; cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True); cell.border = border
     wd.row_dimensions[1].height = 28
-    bad = PatternFill(start_color='FDECEC', end_color='FDECEC', fill_type='solid')
-    warn = PatternFill(start_color='FFF6DF', end_color='FFF6DF', fill_type='solid')
-    blue = PatternFill(start_color='EAF1FF', end_color='EAF1FF', fill_type='solid')
+    bad = PatternFill(start_color='FDECEC', end_color='FDECEC', fill_type='solid'); warn = PatternFill(start_color='FFF6DF', end_color='FFF6DF', fill_type='solid'); blue = PatternFill(start_color='EAF1FF', end_color='EAF1FF', fill_type='solid')
     for d in days:
         wd.append([d['number'], d.get('department', ''), d.get('unit', ''), d['name'], d.get('position', ''), d['work_format'], d['date'], d['rv'], d['skud'], d['interval'], d['plan'], '; '.join(d['statuses'])])
-        st = d['statuses']
-        b = any(x.startswith(('Опоздание', 'Ранний уход', 'Аномально', 'Проблема', 'Нераспознанный')) for x in st)
-        w = any(x.startswith(('Поздний уход', 'Отклонение длительности')) for x in st)
+        st = d['statuses']; b = any(x.startswith(('Опоздание', 'Ранний уход', 'Аномально', 'Проблема', 'Нераспознанный')) for x in st); w = any(x.startswith(('Поздний уход', 'Отклонение длительности')) for x in st)
         fill = bad if b else (warn if w else (blue if d['kind'] in ('remote', 'free', 'off_schedule') else None))
         if fill:
             r = wd.max_row
             for c in range(1, 13): wd.cell(r, c).fill = fill
-    wd.freeze_panes = 'A2'
-    wd.auto_filter.ref = wd.dimensions
+    wd.freeze_panes = 'A2'; wd.auto_filter.ref = wd.dimensions
     dwidths = {1: 8, 2: 28, 3: 28, 4: 32, 5: 28, 6: 16, 7: 12, 8: 9, 9: 9, 10: 18, 11: 20, 12: 60}
     for c, w in dwidths.items(): wd.column_dimensions[get_column_letter(c)].width = w
 
     de = wb.create_sheet('Описание значений')
     de.append(['Колонка', 'Описание'])
-    for cell in de[1]:
-        cell.fill = header_fill; cell.font = header_font; cell.alignment = Alignment(horizontal='center', vertical='center'); cell.border = border
+    for cell in de[1]: cell.fill = header_fill; cell.font = header_font; cell.alignment = Alignment(horizontal='center', vertical='center'); cell.border = border
     for name, desc in COLUMN_DESCRIPTIONS:
         de.append([name, desc])
         r = de.max_row
-        de.cell(r, 1).font = Font(bold=True)
-        de.cell(r, 1).alignment = Alignment(vertical='top', wrap_text=True)
+        de.cell(r, 1).font = Font(bold=True); de.cell(r, 1).alignment = Alignment(vertical='top', wrap_text=True)
         de.cell(r, 2).alignment = Alignment(vertical='top', wrap_text=True)
         de.cell(r, 1).border = border; de.cell(r, 2).border = border
-    de.column_dimensions['A'].width = 28
-    de.column_dimensions['B'].width = 100
+    de.column_dimensions['A'].width = 28; de.column_dimensions['B'].width = 100
     wb.save(path)
-
-def dashboard_data(emps, days, group_by='department', filter_dept='', filter_unit=''):
+    def dashboard_data(emps, days, group_by='department', filter_dept='', filter_unit=''):
     agg = {}
     for e in emps:
         if filter_dept and e.get('department') != filter_dept: continue
@@ -769,8 +666,14 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
     for e in es:
         s = e['summary']
         status = ('<span class="tag tag-gray">Увольнение сотрудника</span>' if s['termination'] else '<span class="tag tag-green">Сформирован</span>')
+        
         diff_min = s['fact'] - s['plan']
-        if diff_min < -5:
+        absent_min = s.get('absent', 0) * 60
+        
+        if absent_min > 0 and diff_min >= -5:
+            norm_status = '<span class="tag" style="background:#fff6df;color:#8a5a00">Есть отсутствие</span>'
+            norm_class = 'neg'
+        elif diff_min < -5:
             norm_status = '<span class="tag tag-red">Недоработка</span>'
             norm_class = 'neg strong'
         elif diff_min > 5:
@@ -779,10 +682,12 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
         else:
             norm_status = '<span class="tag tag-green">Норма</span>'
             norm_class = 'grey'
+            
         pct = round((diff_min / s['plan'] * 100), 1) if s['plan'] else 0.0
         if abs(pct) <= 1: pct_class = 'grey'
         elif abs(pct) <= 5: pct_class = 'pos' if pct > 0 else 'neg'
         else: pct_class = 'neg strong' if pct < 0 else 'pos strong'
+        
         sr.append('<tr>'
             '<td>' + esc(e['number']) + '</td>'
             '<td class="name">' + esc(e['name']) + '</td>'
@@ -828,7 +733,7 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
 
     thead = ('<tr><th>№</th><th>Сотрудник</th><th>Должность</th><th>Департамент</th>'
              '<th>Подразделение</th><th>Формат</th><th>Тип учета</th><th>График</th>'
-             '<th>Рабочие дни</th><th>Удалённые дни</th><th>Опоздания</th><th>Ранние уходы</th>'
+             '<th>Рабочие дни</th><th>Удалённые дни</th><th>Поздний приход</th><th>Ранние уходы</th>'
              '<th>Аномально ранние</th><th>Поздние уходы</th><th>СКУД выше РВ</th>'
              '<th>СКУД ниже РВ</th>'
              '<th>Отклонение, ч</th><th>Отклонение, %</th><th>Статус нормы</th>'
@@ -871,7 +776,7 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
              '<div class="stat"><a class="btn btn-green" href="' + export_url + '">Export Excel</a></div></div></div>')
     head_cells = ['<th>' + ('Департамент' if group_by == 'department' else 'Подразделение') + '</th>']
     head_cells.append('<th>Сотрудники</th>')
-    col_titles = {'plan': 'План (РВ), ч', 'fact': 'Факт, ч', 'diff': 'Разница, ч', 'norm': 'Статус нормы', 'pct': 'Отклонение, %', 'late': 'Опоздания, ч', 'early': 'Ранние уходы, ч', 'late_leave': 'Поздние уходы, ч', 'off': 'Вне графика, ч', 'early_arr': 'Ранний приход, ч', 'remote_rv': 'Потенц. удалённые, ч', 'free': 'Свободный график, ч'}
+    col_titles = {'plan': 'План (РВ), ч', 'fact': 'Факт, ч', 'diff': 'Разница, ч', 'norm': 'Статус нормы', 'pct': 'Отклонение, %', 'late': 'Поздний приход, ч', 'early': 'Ранние уходы, ч', 'absent': 'Отсутствие (не в офисе), ч', 'off': 'Вне графика, ч', 'early_arr': 'Ранний приход, ч', 'remote_rv': 'Потенц. удалённые, ч', 'free': 'Свободный график, ч'}
     for k, _ in COL_TOGGLES:
         if k in active_cols: head_cells.append('<th>' + col_titles.get(k, k) + '</th>')
     head = '<tr>' + ''.join(head_cells) + '</tr>'
@@ -897,7 +802,7 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
         return '<tr class="' + cls + '">' + ''.join(cells) + '</tr>'
     body = ''.join(line(r['name'], r) for r in rows) + line('ИТОГО', t, 'total')
     note = ('<p class="note">Расчёт без допусков: любое отклонение считается с первой минуты. Время раннего прихода в факт не входит. Дни, где РВ>0, но нет ни интервала, ни СКУД, считаются потенциально удалёнными и в план/факт не входят. Часы показаны в формате ЧЧ:ММ.</p>')
-    pie_parts = [('Опоздания', t.get('late', 0), '#e57373'), ('Ранние уходы', t.get('early', 0), '#f0b24a'), ('Вне графика', t.get('off', 0), '#7c8cf0')]
+    pie_parts = [('Поздний приход', t.get('late', 0), '#e57373'), ('Ранние уходы', t.get('early', 0), '#f0b24a'), ('Вне графика', t.get('off', 0), '#7c8cf0')]
     pie_html = render_pie('Структура отклонений', pie_parts)
     table = ('<div class="card"><h2>' + esc(title) + '</h2><p class="muted">' + esc(subtitle) + '</p><div class="wrap"><table>' + head + body + '</table></div>' + note + '</div>')
     return form + cols_form + cards + pie_html + table
@@ -936,7 +841,7 @@ def render_dynamics(filter_dept='', filter_unit=''):
         else: delta_diff = '—'; delta_late = '—'
         rows_html += ('<tr><td class="name">' + esc(period_label(snap['meta'])) + '</td><td>' + str(agg['emp']) + '</td><td>' + fm(agg['plan']) + '</td><td>' + fm(agg['fact']) + '</td><td>' + diff_html + '</td><td>' + fm(agg['late']) + '</td><td>' + fm(agg['early']) + '</td><td>' + fm(agg['late_leave']) + '</td><td>' + fm(agg['off']) + '</td><td>' + delta_diff + '</td><td>' + delta_late + '</td></tr>')
         prev = agg
-    head = ('<tr><th>Период</th><th>Сотрудники</th><th>План (РВ), ч</th><th>Факт, ч</th><th>Разница, ч</th><th>Опоздания, ч</th><th>Ранние уходы, ч</th><th>Поздние уходы, ч</th><th>Вне графика, ч</th><th>Δ разницы к пред.</th><th>Δ опозданий к пред.</th></tr>')
+    head = ('<tr><th>Период</th><th>Сотрудники</th><th>План (РВ), ч</th><th>Факт, ч</th><th>Разница, ч</th><th>Поздний приход, ч</th><th>Ранние уходы, ч</th><th>Поздние уходы, ч</th><th>Вне графика, ч</th><th>Δ разницы к пред.</th><th>Δ опозданий к пред.</th></tr>')
     export_url = '/export/dynamics'
     q = []
     if filter_dept: q.append('department=' + esc(filter_dept))
