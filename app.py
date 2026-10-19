@@ -168,6 +168,21 @@ def prepare_upload(src_path, dst_path):
     wb.save(dst_path)
     wb.close()
 
+def find_day_start(path):
+    try:
+        wb = load_workbook(path, data_only=True, read_only=False)
+        ws = wb.active
+        for r_idx in range(1, min(15, ws.max_row) + 1):
+            for c_idx in range(1, ws.max_column + 1):
+                v = txt(ws.cell(row=r_idx, column=c_idx).value)
+                if re.match(r'^0?1(\s+\S+)?$', v):
+                    wb.close()
+                    return c_idx - 1
+        wb.close()
+    except Exception as ex:
+        print(f'[find_day_start] error: {ex}')
+    return None
+
 def analyze(path):
     wb = load_workbook(path, data_only=True, read_only=False)
     ws = wb.active
@@ -322,8 +337,7 @@ def analyze(path):
     wb.close()
     meta = {'year': year, 'month': month, 'period_key': f'{year:04d}-{month:02d}'}
     return employees, days, meta
-
-COLUMN_DESCRIPTIONS = [
+    COLUMN_DESCRIPTIONS = [
     ('Рабочие дни', 'Количество дней, когда по графику было запланировано присутствие.'),
     ('Удалённые дни', 'Дни без визита в офис и без СКУД.'),
     ('Поздний приход', 'Дни прихода позже начала смены. С первой минуты, без допуска.'),
@@ -456,7 +470,8 @@ def export_xlsx(emps, days, path):
         de.cell(r, 1).border = border; de.cell(r, 2).border = border
     de.column_dimensions['A'].width = 28; de.column_dimensions['B'].width = 100
     wb.save(path)
-    def dashboard_data(emps, days, group_by='department', filter_dept='', filter_unit=''):
+
+def dashboard_data(emps, days, group_by='department', filter_dept='', filter_unit=''):
     agg = {}
     for e in emps:
         if filter_dept and e.get('department') != filter_dept: continue
