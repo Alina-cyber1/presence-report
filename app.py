@@ -213,25 +213,41 @@ def prepare_upload(src_path, dst_path):
     wb.save(dst_path)
     wb.close()
 
+def find_day_start(path):
+    """
+    Открывает файл и ищет колонку, с которой начинаются дни.
+    Ищет текст «Разница СБ и плановых часов» и берет следующую колонку.
+    Возвращает Python-индекс (0-based) для COL_DAY_START.
+    """
+    try:
+        wb = load_workbook(path, data_only=True, read_only=False)
+        ws = wb.active
+        # Ищем в первых 15 строках
+        for r_idx in range(1, min(15, ws.max_row) + 1):
+            for c_idx in range(1, ws.max_column + 1):
+                v = txt(ws.cell(row=r_idx, column=c_idx).value)
+                low = v.lower().replace('ё', 'е')
+                if 'разница' in low and 'сб' in low:
+                    wb.close()
+                    # Нашли колонку с текстом. Следующая колонка = начало дней.
+                    # c_idx (1-based) -> следующий индекс (1-based) = c_idx + 1
+                    # Python (0-based) = (c_idx + 1) - 1 = c_idx
+                    return c_idx
+        wb.close()
+    except Exception as ex:
+        print(f'[find_day_start] error: {ex}')
+    return None
+    
 def analyze(path):
-    """
-    A (0)  — Департамент
-    B (1)  — №
-    C (2)  — Подразделение
-    D (3)  — Сотрудник (ФИО)
-    E (4)  — Табельный
-    F (5)  — Должность
-    G (6)  — Дата приема
-    H (7)  — Дата увольнения
-    I (8)  — Формат работы
-    J (9)  — График
-    K (10) — Болезнь (РВ)
-    L (11) — Болезнь (СКУД)
-    ...
-    AE (30) — Разница СБ и плановых часов
-    AF (31) — 01 Сб — РВ
-    AG (32) — 01 Сб — СКУД
-    """
+
+    # Ищем начало дней динамически
+    COL_DAY_START = find_day_start(path)
+    if COL_DAY_START is None:
+        COL_DAY_START = 49  # fallback, если не нашли
+        print(f'[analyze] ВНИМАНИЕ: колонка не найдена, используем fallback {COL_DAY_START}')
+    else:
+        print(f'[analyze] Начало дней найдено в колонке: {COL_DAY_START}')
+
     COL_DEPARTMENT = 0
     COL_NUMBER     = 1
     COL_UNIT       = 2
@@ -240,9 +256,9 @@ def analyze(path):
     COL_POSITION   = 5
     COL_FORMAT     = 8
     COL_SCHEDULE   = 9
-    COL_DAY_START  = 31
     COL_DAY_STEP   = 2
 
+    
     DEPT_MAP = load_departments()
     wb = load_workbook(path, data_only=True, read_only=True, keep_links=False)
     ws = wb.active
@@ -259,14 +275,42 @@ def analyze(path):
 
     employees = []
     days = []
-    window = []
-    for row in rows_iter:
-        window.append(row)
-        if len(window) > 3:
-            window.pop(0)
-        if len(window) == 3 and is_employee_row(window[0]):
-            emp_row = window[0]
-            data_row = window[2]
+    
+    # Превращаем итератор в список, чтобы искать данные под сотрудником
+    rows_list = list(rows_iter)
+    i = 0
+    while i < len(rows_list):
+        row = rows_list[i]
+        if is_employee_row(row):
+            emp_row = row
+            
+            # Ищем данные по дням: пропускаем пустые строки под сотрудником
+            data_row = None
+            j = i + 1
+            while j < len(rows_list):
+                # Если наткнулись на следующего сотрудника — данных нет
+                if is_employee_row(rows_list[j]):
+                    break
+                # Проверяем, есть ли числа в строке (РВ/СКУД)
+                test_row = rows_list[j]
+                if len(test_row) > COL_DAY_START:
+                    # Ищем хотя бы одну цифру > 0 во всех днях месяца (31 день * 2 колонки = 62)
+                    has_data = False
+                    for check_idx in range(COL_DAY_START, min(len(test_row), COL_DAY_START + 62)):
+                        if num(test_row[check_idx]) > 0:
+                            has_data = True
+                            break
+                    if has_data:
+                        data_row = test_row
+                        break
+                j += 1
+
+            if not data_row:
+                i += 1
+                continue
+
+            # --- ДАЛЬШЕ ИДЕТ ВАШ СТАРЫЙ КОД ОБРАБОТКИ СОТРУДНИКА ---
+            # (department_direct = ... и т.д.)
 
             department_direct = txt(emp_row[COL_DEPARTMENT]) if len(emp_row) > COL_DEPARTMENT else ''
             unit = txt(emp_row[COL_UNIT]) if len(emp_row) > COL_UNIT else ''
@@ -401,7 +445,8 @@ def analyze(path):
                 })
 
             employees.append(e)
-            window = []
+            i = j  # Перепрыгиваем через данные (эта строка должна быть!)
+        i += 1
 
     wb.close()
     meta = {'year': year, 'month': month, 'period_key': f'{year:04d}-{month:02d}'}
