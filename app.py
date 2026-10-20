@@ -297,6 +297,26 @@ def analyze(path):
                 if rv > 0:
                     if not absence_type: e['summary']['work'] += 1
                     if skud > 0:
+                        if start is not None and rule['start'] is not None:
+                            if start > rule['start']:
+                                statuses.append('Опоздание ' + fm(start - rule['start']))
+                                e['summary']['late'] += 1
+                            elif start < rule['start'] - 10:
+                                statuses.append('Аномально ранний приход ' + fm(rule['start'] - start))
+                                e['summary']['anomaly'] += 1
+                            elif start < rule['start']:
+                                statuses.append('Ранний приход ' + fm(rule['start'] - start))
+                        
+                        if end is not None and rule['start'] is not None:
+                            pe = rule['start'] + rv * 60
+                            delta = end - pe
+                            if delta < 0:
+                                statuses.append('Ранний уход ' + fm(-delta))
+                                e['summary']['early'] += 1
+                            elif delta > 5:
+                                statuses.append('Поздний уход ' + fm(delta))
+                                e['summary']['late_leave'] += 1
+                                
                         d = (skud - rv) * 60
                         if d > 5: statuses.append('Отклонение длительности СКУД от РВ: +' + fm(d)); e['summary']['above'] += skud - rv
                         elif d < -5: statuses.append('Отклонение длительности СКУД от РВ: ' + fm(d)); e['summary']['below'] += rv - skud
@@ -324,7 +344,6 @@ def analyze(path):
     wb.close()
     meta = {'year': year, 'month': month, 'period_key': f'{year:04d}-{month:02d}'}
     return employees, days, meta
-
 COLUMN_DESCRIPTIONS = [
     ('Рабочие дни', 'Количество дней, когда по графику было запланировано присутствие.'),
     ('Удалённые дни', 'Дни без визита в офис и без СКУД.'),
@@ -679,12 +698,13 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
         if abs(diff_min) <= 5:
             diff_min = 0
 
-        if diff_min < -5:
-            norm_status = '<span class="tag tag-red">Недоработка</span>'
-            norm_class = 'neg strong'
-        elif diff_min > 5:
+        # Если есть переработка по СКУД, ставим статус "Переработка", даже если общий баланс 0
+        if s.get('above', 0) > 0 or diff_min > 5:
             norm_status = '<span class="tag" style="background:#fff6df;color:#8a5a00">Переработка</span>'
             norm_class = 'pos strong'
+        elif diff_min < -5:
+            norm_status = '<span class="tag tag-red">Недоработка</span>'
+            norm_class = 'neg strong'
         else:
             norm_status = '<span class="tag tag-green">Норма</span>'
             norm_class = 'grey'
@@ -789,7 +809,16 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
              '<div class="stat"><a class="btn btn-green" href="' + export_url + '">Export Excel</a></div></div></div>')
     head_cells = ['<th>' + ('Департамент' if group_by == 'department' else 'Подразделение') + '</th>']
     head_cells.append('<th>Сотрудники</th>')
-    col_titles = {'plan': 'План (РВ), ч', 'fact': 'Факт, ч', 'diff': 'Разница, ч', 'norm': 'Статус нормы', 'pct': 'Отклонение, %', 'late': 'Поздний приход, ч', 'early': 'Ранние уходы, ч', 'absent': 'Отсутствие (не в офисе), ч', 'off': 'Вне графика, ч', 'early_arr': 'Ранний приход, ч', 'remote_rv': 'Потенц. удалённые, ч', 'free': 'Свободный график, ч'}
+    col_titles = {
+        'plan': 'План (РВ), ч', 'fact': 'Факт, ч', 'diff': 'Разница, ч', 
+        'norm': 'Статус нормы', 'pct': 'Отклонение, %', 
+        'late': 'Поздний приход, ч', 'early': 'Ранние уходы, ч', 
+        'absent': 'Отсутствие (не в офисе), ч', 'off': 'Вне графика, ч', 
+        'above': 'СКУД выше РВ, ч', 'below': 'СКУД ниже РВ, ч',
+        'early_arr': 'Ранний приход, ч', 'remote_rv': 'Потенц. удалённые, ч', 
+        'free': 'Свободный график, ч',
+        'absence_flag': 'Отметка об отсутствии'
+    }
     for k, _ in COL_TOGGLES:
         if k in active_cols: head_cells.append('<th>' + col_titles.get(k, k) + '</th>')
     head = '<tr>' + ''.join(head_cells) + '</tr>'
@@ -797,7 +826,8 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
         cells = ['<td class="name">' + esc(label) + '</td>', '<td>' + str(r['emp']) + '</td>']
         for k, _ in COL_TOGGLES:
             if k not in active_cols: continue
-            if k == 'diff': cells.append('<td class="' + sgn(r['diff']) + ' strong">' + fsigned(r['diff']) + '</td>')
+            if k == 'diff': 
+                cells.append('<td class="' + sgn(r['diff']) + ' strong">' + fsigned(r['diff']) + '</td>')
             elif k == 'norm':
                 dm = r['diff']
                 if dm < -5: cells.append('<td><span class="tag tag-red">Недоработка</span></td>')
@@ -809,9 +839,16 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
                 elif abs(pct) <= 5: cl = 'pos' if pct > 0 else 'neg'
                 else: cl = 'neg strong' if pct < 0 else 'pos strong'
                 cells.append('<td class="' + cl + '">' + f'{pct:+.1f}%' + '</td>')
-            elif k == 'absent': cells.append('<td class="neg strong">' + fm(r[k]) + '</td>')
-            elif k == 'absence_flag': cells.append('<td class="grey">—</td>') # <--- ДОБАВИТЬ ВОТ ЭТУ СТРОКУ
-            elif k in ('early_arr', 'remote_rv', 'free'): cells.append('<td class="grey">' + fm(r[k]) + '</td>')
+            elif k == 'absence_flag': 
+                cells.append('<td class="grey">—</td>')
+            elif k in ('absent', 'off'):
+                cells.append('<td class="neg strong">' + fm(r.get(k, 0)) + '</td>')
+            elif k in ('above', 'below'):
+                cells.append('<td>' + fm(r.get(k, 0) * 60) + '</td>')
+            elif k in ('early_arr', 'remote_rv', 'free'): 
+                cells.append('<td class="grey">' + fm(r.get(k, 0)) + '</td>')
+            else: 
+                cells.append('<td>' + fm(r.get(k, 0)) + '</td>')
         return '<tr class="' + cls + '">' + ''.join(cells) + '</tr>'
     body = ''.join(line(r['name'], r) for r in rows) + line('ИТОГО', t, 'total')
     note = ('<p class="note">Расчёт без допусков: любое отклонение считается с первой минуты. Время раннего прихода в факт не входит. Дни, где РВ>0, но нет ни интервала, ни СКУД, считаются потенциально удалёнными и в план/факт не входят. Часы показаны в формате ЧЧ:ММ.</p>')
@@ -962,4 +999,4 @@ def export_dynamics():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)    
