@@ -344,6 +344,7 @@ def analyze(path):
     wb.close()
     meta = {'year': year, 'month': month, 'period_key': f'{year:04d}-{month:02d}'}
     return employees, days, meta
+
 COLUMN_DESCRIPTIONS = [
     ('Рабочие дни', 'Количество дней, когда по графику было запланировано присутствие.'),
     ('Удалённые дни', 'Дни без визита в офис и без СКУД.'),
@@ -692,7 +693,9 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
         s = e['summary']
         status = ('<span class="tag tag-gray">Увольнение сотрудника</span>' if s['termination'] else '<span class="tag tag-green">Сформирован</span>')
         
-        diff_min = s['fact'] - s['plan']
+        # Берем чистую переработку по СКУД (above) и вычитаем недоработки (below)
+        # Но недоработки в дни прогулов мы не учитываем, поэтому diff_min считаем так:
+        diff_min = (s.get('above', 0) - s.get('below', 0)) * 60
         absent_min = s.get('absent', 0) * 60
         
         if abs(diff_min) <= 5:
@@ -827,7 +830,10 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
         for k, _ in COL_TOGGLES:
             if k not in active_cols: continue
             if k == 'diff': 
-                cells.append('<td class="' + sgn(r['diff']) + ' strong">' + fsigned(r['diff']) + '</td>')
+                # Считаем разницу так же, как в карточке сотрудника (без учета прогулов)
+                dept_diff = (r.get('above', 0) - r.get('below', 0)) * 60
+                if abs(dept_diff) <= 5: dept_diff = 0
+                cells.append('<td class="' + sgn(dept_diff) + ' strong">' + fsigned(dept_diff) + '</td>')
             elif k == 'norm':
                 dm = r['diff']
                 if dm < -5: cells.append('<td><span class="tag tag-red">Недоработка</span></td>')
@@ -999,4 +1005,4 @@ def export_dynamics():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)    
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True, use_reloader=False)
