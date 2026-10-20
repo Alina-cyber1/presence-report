@@ -96,7 +96,7 @@ def is_employee_row(row):
     return True
 
 def strict_day(rule, missing, start, end, rv, skud, acc_type, absence_type=''):
-    z = {'plan': 0, 'fact': 0, 'late': 0, 'early': 0, 'late_leave': 0, 'off': 0, 'early_arr': 0, 'remote_rv': 0, 'free': 0, 'absent': 0}
+    z = {'plan': 0, 'fact': 0, 'late': 0, 'early': 0, 'late_leave': 0, 'off': 0, 'early_arr': 0, 'remote_rv': 0, 'free': 0, 'absent': 0, 'above': 0.0, 'below': 0.0}
     if absence_type: return z
     has_int = start is not None and end is not None
     presence = max(end - start, 0) if has_int else round(skud * 60)
