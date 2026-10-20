@@ -324,7 +324,8 @@ def analyze(path):
     wb.close()
     meta = {'year': year, 'month': month, 'period_key': f'{year:04d}-{month:02d}'}
     return employees, days, meta
-    COLUMN_DESCRIPTIONS = [
+
+COLUMN_DESCRIPTIONS = [
     ('Рабочие дни', 'Количество дней, когда по графику было запланировано присутствие.'),
     ('Удалённые дни', 'Дни без визита в офис и без СКУД.'),
     ('Поздний приход', 'Дни прихода позже начала смены. С первой минуты, без допуска.'),
@@ -354,8 +355,11 @@ DASH_DESCRIPTIONS = [
 DKEYS = ['plan', 'fact', 'late', 'early', 'late_leave', 'off', 'early_arr', 'remote_rv', 'free', 'absent']
 
 COL_TOGGLES = [
-    ('plan', 'План (РВ), ч'), ('fact', 'Факт, ч'), ('diff', 'Разница, ч'), ('norm', 'Статус нормы'), ('pct', 'Отклонение, %'),
+    ('plan', 'План (РВ), ч'), ('fact', 'Факт, ч'), ('diff', 'Разница, ч'), ('norm', 'Статус нормы'),
+    ('absence_flag', 'Отметка об отсутствии'),
+    ('pct', 'Отклонение, %'),
     ('late', 'Поздний приход, ч'), ('early', 'Ранние уходы, ч'), ('absent', 'Отсутствие (не в офисе), ч'), ('off', 'Вне графика, ч'),
+    ('above', 'СКУД выше РВ, ч'), ('below', 'СКУД ниже РВ, ч'),
     ('early_arr', 'Ранний приход, ч (справочно)'), ('remote_rv', 'Потенциально удалённые, ч'), ('free', 'Свободный график, ч'),
 ]
 ALL_COLS = {k for k, _ in COL_TOGGLES}
@@ -672,10 +676,10 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
         diff_min = s['fact'] - s['plan']
         absent_min = s.get('absent', 0) * 60
         
-        if absent_min > 0 and diff_min >= -5:
-            norm_status = '<span class="tag" style="background:#fff6df;color:#8a5a00">Есть отсутствие</span>'
-            norm_class = 'neg'
-        elif diff_min < -5:
+        if abs(diff_min) <= 5:
+            diff_min = 0
+
+        if diff_min < -5:
             norm_status = '<span class="tag tag-red">Недоработка</span>'
             norm_class = 'neg strong'
         elif diff_min > 5:
@@ -708,6 +712,7 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
             '<td>' + fh(s['above']) + '</td>'
             '<td>' + fh(s['below']) + '</td>'
             '<td class="' + norm_class + '">' + fsigned(diff_min) + '</td>'
+            '<td>' + ('<span class="tag tag-red">Есть отсутствие</span>' if absent_min > 0 else '—') + '</td>'
             '<td class="' + pct_class + '">' + f'{pct:+.1f}%' + '</td>'
             '<td>' + norm_status + '</td>'
             '<td>' + status + '</td>'
@@ -719,17 +724,24 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
         bad = any(x.startswith(('Опоздание', 'Ранний уход', 'Аномально', 'Проблема', 'Нераспознанный')) for x in d['statuses'])
         warn = any(x.startswith(('Поздний уход', 'Отклонение длительности')) for x in d['statuses'])
         cl = 'bad' if bad else ('warn' if warn else ('blue' if d['kind'] in ('remote', 'free', 'off_schedule') else ''))
+        
+        day_diff_min = 0
+        diff_class = ''
+        if d['rv'] > 0 and d['skud'] <= 0:
+            day_diff_min = 0
+            diff_class = 'grey'
+        elif d['skud'] > 0 and d['rv'] > 0:
+            day_diff_min = (d['skud'] - d['rv']) * 60
+            diff_class = 'pos' if day_diff_min > 0 else ('neg' if day_diff_min < 0 else '')
+            
         dr.append('<tr class="' + cl + '">'
             '<td>' + esc(d['number']) + '</td>'
             '<td class="name">' + esc(d['name']) + '</td>'
-            '<td>' + esc(d.get('position', '')) + '</td>'
-            '<td>' + esc(d.get('department', '')) + '</td>'
-            '<td>' + esc(d.get('unit', '')) + '</td>'
             '<td>' + esc(d['date']) + '</td>'
+            '<td>' + esc(d['interval']) + '</td>'
             '<td>' + fh(d['rv']) + '</td>'
             '<td>' + fh(d['skud']) + '</td>'
-            '<td>' + esc(d['interval']) + '</td>'
-            '<td>' + esc(d['plan']) + '</td>'
+            '<td class="' + diff_class + ' strong">' + fsigned(day_diff_min) + '</td>'
             '<td>' + esc(st) + '</td>'
             '</tr>')
 
@@ -738,7 +750,7 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
              '<th>Рабочие дни</th><th>Удалённые дни</th><th>Поздний приход</th><th>Ранние уходы</th>'
              '<th>Аномально ранние</th><th>Поздние уходы</th><th>СКУД выше РВ</th>'
              '<th>СКУД ниже РВ</th>'
-             '<th>Отклонение, ч</th><th>Отклонение, %</th><th>Статус нормы</th>'
+             '<th>Отклонение, ч</th><th>Отметка об отсутствии</th><th>Отклонение, %</th><th>Статус нормы</th>'
              '<th>Статус</th></tr>')
 
     return (filters + '<div class="card"><div class="grid">'
@@ -749,9 +761,8 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
             '<div class="wrap"><table>' + thead + ''.join(sr) + '</table></div></div>'
             '<div class="card"><h2>Детализация по дням</h2>'
             '<div class="wrap"><table>'
-            '<tr><th>№</th><th>Сотрудник</th><th>Должность</th><th>Департамент</th>'
-            '<th>Подразделение</th><th>Дата</th><th>РВ</th><th>СКУД</th>'
-            '<th>Интервал</th><th>План</th><th>Статусы</th></tr>'
+            '<tr><th>№</th><th>Сотрудник</th><th>Дата</th><th>Факт (приход - уход)</th>'
+            '<th>РВ (план), ч</th><th>СКУД, ч</th><th>Отклонение по дню, ч</th><th>Статусы дня</th></tr>'
             + ''.join(dr) + '</table></div></div>')
 
 def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', active_cols=None):
