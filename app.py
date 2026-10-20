@@ -372,7 +372,7 @@ DASH_DESCRIPTIONS = [
     ('Свободный график, ч', 'Время по свободному графику, без нормы.'),
 ]
 
-DKEYS = ['plan', 'fact', 'late', 'early', 'late_leave', 'off', 'early_arr', 'remote_rv', 'free', 'absent']
+DKEYS = ['plan', 'fact', 'late', 'early', 'late_leave', 'off', 'early_arr', 'remote_rv', 'free', 'absent', 'above', 'below']
 
 COL_TOGGLES = [
     ('plan', 'План (РВ), ч'), ('fact', 'Факт, ч'), ('diff', 'Разница, ч'), ('norm', 'Статус нормы'),
