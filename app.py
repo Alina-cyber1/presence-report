@@ -810,8 +810,8 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
                 else: cl = 'neg strong' if pct < 0 else 'pos strong'
                 cells.append('<td class="' + cl + '">' + f'{pct:+.1f}%' + '</td>')
             elif k == 'absent': cells.append('<td class="neg strong">' + fm(r[k]) + '</td>')
+            elif k == 'absence_flag': cells.append('<td class="grey">—</td>') # <--- ДОБАВИТЬ ВОТ ЭТУ СТРОКУ
             elif k in ('early_arr', 'remote_rv', 'free'): cells.append('<td class="grey">' + fm(r[k]) + '</td>')
-            else: cells.append('<td>' + fm(r[k]) + '</td>')
         return '<tr class="' + cls + '">' + ''.join(cells) + '</tr>'
     body = ''.join(line(r['name'], r) for r in rows) + line('ИТОГО', t, 'total')
     note = ('<p class="note">Расчёт без допусков: любое отклонение считается с первой минуты. Время раннего прихода в факт не входит. Дни, где РВ>0, но нет ни интервала, ни СКУД, считаются потенциально удалёнными и в план/факт не входят. Часы показаны в формате ЧЧ:ММ.</p>')
