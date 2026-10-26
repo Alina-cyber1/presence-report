@@ -224,13 +224,16 @@ def find_day_start(path):
         print(f'[find_day_start] error: {ex}')
     return None
 
-def analyze(path):
+def analyze(path, bc_path=None):
     COL_DAY_START = find_day_start(path)
     if COL_DAY_START is None:
         COL_DAY_START = 44
         print(f'[analyze] ВНИМАНИЕ: колонка не найдена, используем fallback {COL_DAY_START}')
-
-    bc_map = load_bc_data(BASE_DIR / 'Отчет УРВ Порт Плаза факт октябрь.xlsx')
+        
+    # Если второй файл не передан — пробуем старое имя по умолчанию
+    if bc_path is None:
+        bc_path = BASE_DIR / 'Отчет УРВ Порт Плаза факт октябрь.xlsx'
+    bc_map = load_bc_data(bc_path)
 
     wb = load_workbook(path, data_only=True, read_only=False)
     ws = wb.active
@@ -715,8 +718,17 @@ def admin_form():
     hist = list_history(); hist_html = ''
     if hist: hist_html = '<div class="card"><h2>Загруженные периоды (в истории)</h2><p class="muted">' + ', '.join(hist) + '</p></div>'
     return ('<h1>Анализ присутствия сотрудников — Админ</h1><p class="subtitle">Загрузка файлов и публикация дашборда для руководителей</p>'
-            '<div class="card"><form method="post" enctype="multipart/form-data" action="/upload"><input type="file" name="file" accept=".xlsx,.xls" required> <button class="btn">Обработать и опубликовать</button></form>' + note + '</div>' + hist_html)
-
+'<div class="card">'
+'<form method="post" enctype="multipart/form-data" action="/upload">'
+  '<div style="display:flex;flex-direction:column;gap:10px;max-width:520px">'
+    '<label><b>1. Отчёт о присутствии (основной):</b><br>'
+      '<input type="file" name="main_file" accept=".xlsx,.xls" required></label>'
+    '<label><b>2. Отчёт БЦ / СКУД здания (дополнительный):</b><br>'
+      '<input type="file" name="bc_file" accept=".xlsx,.xls"></label>'
+  '</div>'
+  '<p><button class="btn">Обработать и опубликовать</button></p>'
+'</form>' + note + '</div>' + hist_html)
+            
 def public_empty():
     return ('<h1>Анализ присутствия сотрудников</h1><p class="subtitle">Дашборд для руководителей</p>'
             '<div class="card"><div class="notice">Отчёт пока не опубликован. Обратитесь к ответственному за обновление.</div></div>')
@@ -1006,28 +1018,50 @@ def admin_index(): return build_page(request.args.get('tab', 'dashboard_dept'), 
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    f = request.files.get('file')
-    if not f or not f.filename: return redirect('/admin')
-    if Path(f.filename).suffix.lower() not in ('.xlsx', '.xls'):
-        STATE['error'] = 'Файл должен иметь расширение .xlsx или .xls'
+    main_f = request.files.get('main_file')
+    bc_f   = request.files.get('bc_file')
+
+    if not main_f or not main_f.filename:
+        STATE['error'] = 'Не загружен основной файл отчёта о присутствии'
         return redirect('/admin')
-    safe_name = Path(f.filename).name
-    target = UPLOAD_DIR / safe_name
-    f.save(target)
-    try: target.replace(LAST_FILE)
+
+    for f in (main_f, bc_f):
+        if f and f.filename and Path(f.filename).suffix.lower() not in ('.xlsx', '.xls'):
+            STATE['error'] = 'Файлы должны иметь расширение .xlsx или .xls'
+            return redirect('/admin')
+
+    safe_main = Path(main_f.filename).name
+    target_main = UPLOAD_DIR / safe_main
+    main_f.save(target_main)
+    try: target_main.replace(LAST_FILE)
     except Exception: pass
+
+    # сохраняем второй файл (БЦ) рядом с основным
+    bc_path = None
+    if bc_f and bc_f.filename:
+        safe_bc = Path(bc_f.filename).name
+        bc_path = UPLOAD_DIR / safe_bc
+        bc_f.save(bc_path)
+
     STATE['status'] = 'processing'; STATE['error'] = None
     try:
         prepared = UPLOAD_DIR / 'prepared.xlsx'
         prepare_upload(LAST_FILE, prepared)
-        emps, days, meta = analyze(prepared)
-        STATE['employees'] = emps; STATE['days'] = days; STATE['meta'] = meta; STATE['filename'] = safe_name
-        save_state(emps, days, meta, safe_name); save_snapshot(emps, days, meta)
+
+        # ---- передаём путь к БЦ в analyze ----
+        emps, days, meta = analyze(prepared, bc_path=bc_path)
+
+        STATE['employees'] = emps; STATE['days'] = days
+        STATE['meta'] = meta; STATE['filename'] = safe_main
+        save_state(emps, days, meta, safe_main)
+        save_snapshot(emps, days, meta)
         for old in EXPORT_DIR.glob('*.xlsx'):
             try: old.unlink()
             except Exception: pass
-    except Exception as ex: STATE['error'] = str(ex)
-    finally: STATE['status'] = 'idle'
+    except Exception as ex:
+        STATE['error'] = str(ex)
+    finally:
+        STATE['status'] = 'idle'
     return redirect('/admin')
 
 @app.route('/export/full')
