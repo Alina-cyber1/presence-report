@@ -7,6 +7,47 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 BASE_DIR = Path(__file__).resolve().parent
+
+# ==========================================================
+# ФУНКЦИЯ ЗАГРУЗКИ ДАННЫХ БЦ
+# ==========================================================
+def load_bc_data(bc_path):
+    """Читает отчет БЦ и возвращает словарь {нормализованный_табельный: часы_в_БЦ}"""
+    bc_hours = {}
+    if not Path(bc_path).exists():
+        print(f"[BC] Файл не найден: {bc_path}")
+        return bc_hours
+    
+    try:
+        import pandas as pd
+        df = pd.read_excel(bc_path, header=None, dtype=str)
+        for _, row in df.iterrows():
+            tab = row[3] # Колонка D (индекс 3) - табельный номер
+            if pd.isna(tab): continue
+            
+            tab_n = re.sub(r"\s+", "", str(tab).strip())
+            m = re.fullmatch(r"(\d{4})(\d+)", tab_n)
+            if m: tab_n = f"{m.group(1)}-{m.group(2)}"
+            
+            if not re.match(r"^\d{4}-\d+", tab_n): continue
+            
+            hours = 0.0
+            for c in range(len(row) - 1, 3, -1):
+                v = row[c]
+                if pd.notna(v) and ":" in str(v):
+                    hm = re.match(r"^(\d+):(\d{2})", str(v))
+                    if hm:
+                        hours = int(hm.group(1)) + int(hm.group(2)) / 60.0
+                        break
+            
+            if hours > 0:
+                bc_hours[tab_n] = round(hours, 2)
+        
+        print(f"[BC] Загружено {len(bc_hours)} сотрудников из отчета БЦ.")
+    except Exception as e:
+        print(f"[BC] Ошибка чтения файла: {e}")
+    return bc_hours
+
 UPLOAD_DIR = BASE_DIR / 'uploads'
 EXPORT_DIR = BASE_DIR / 'exports'
 CONFIG_DIR = BASE_DIR / 'config'
@@ -189,6 +230,8 @@ def analyze(path):
         COL_DAY_START = 44
         print(f'[analyze] ВНИМАНИЕ: колонка не найдена, используем fallback {COL_DAY_START}')
 
+    bc_map = load_bc_data(BASE_DIR / 'Отчет УРВ Порт Плаза факт октябрь.xlsx')
+
     wb = load_workbook(path, data_only=True, read_only=False)
     ws = wb.active
     header_row = 4
@@ -262,12 +305,18 @@ def analyze(path):
             elif ('сменн' in low_sched) or ('2/2' in low_sched) or ('1/3' in low_sched) or ('сутки' in low_sched): acc_type = 'Сменный'
             else: acc_type = 'Офис'
 
+            tab_n = re.sub(r"\s+", "", personnel)
+            m = re.fullmatch(r"(\d{4})(\d+)", tab_n)
+            if m: tab_n = f"{m.group(1)}-{m.group(2)}"
+            bc_skud_hours = bc_map.get(tab_n, 0.0)
+
             e = {
                 'number': number, 'name': name, 'position': position,
                 'department': department, 'unit': unit, 'personnel': personnel,
                 'work_format': work_format, 'acc_type': acc_type,
                 'schedule': raw_schedule or 'График не указан',
                 'rule': rule,
+                'bc_skud': bc_skud_hours,
                 'summary': {'work': 0, 'remote': 0, 'late': 0, 'early': 0, 'anomaly': 0, 'late_leave': 0, 'above': 0.0, 'below': 0.0, 'off': 0, 'problems': 0, 'excluded': False, 'termination': is_missing, 'plan': 0, 'fact': 0, 'absent': 0}
             }
 
@@ -360,7 +409,9 @@ COLUMN_DESCRIPTIONS = [
 DASH_DESCRIPTIONS = [
     ('Сотрудники', 'Количество сотрудников.'),
     ('План (РВ), ч', 'Сумма нормы РВ по рабочим дням.'),
-    ('Факт, ч', 'Фактически отработано от прихода до ухода.'),
+    ('Факт (СКУД), ч', 'Фактически отработано по данным СКУД.'),
+    ('СКУД БЦ (здание), ч', 'Часы, проведенные в здании БЦ (из отдельного отчета).'),
+    ('Разница СКУД/БЦ, ч', 'Разница между зданием и общим СКУД.'),
     ('Разница план/факт, ч', 'Факт минус план.'),
     ('Поздний приход, ч', 'Суммарное время прихода позже начала смены.'),
     ('Ранние уходы, ч', 'Суммарное время ранних уходов.'),
@@ -372,15 +423,26 @@ DASH_DESCRIPTIONS = [
     ('Свободный график, ч', 'Время по свободному графику, без нормы.'),
 ]
 
-DKEYS = ['plan', 'fact', 'late', 'early', 'late_leave', 'off', 'early_arr', 'remote_rv', 'free', 'absent', 'above', 'below']
+DKEYS = ['plan', 'fact', 'bc_skud', 'fact_diff', 'late', 'early', 'late_leave', 'off', 'early_arr', 'remote_rv', 'free', 'absent', 'above', 'below']
 
 COL_TOGGLES = [
-    ('plan', 'План (РВ), ч'), ('fact', 'Факт, ч'), ('diff', 'Разница, ч'), ('norm', 'Статус нормы'),
+    ('plan', 'План (РВ), ч'), 
+    ('fact', 'Факт (СКУД), ч'), 
+    ('bc_skud', 'СКУД БЦ (здание), ч'), 
+    ('fact_diff', 'Разница СКУД/БЦ, ч'), 
+    ('diff', 'Отклонение от плана, ч'), 
+    ('norm', 'Статус нормы'),
     ('absence_flag', 'Отметка об отсутствии'),
     ('pct', 'Отклонение, %'),
-    ('late', 'Поздний приход, ч'), ('early', 'Ранние уходы, ч'), ('absent', 'Отсутствие (не в офисе), ч'), ('off', 'Вне графика, ч'),
-    ('above', 'СКУД выше РВ, ч'), ('below', 'СКУД ниже РВ, ч'),
-    ('early_arr', 'Ранний приход, ч (справочно)'), ('remote_rv', 'Потенциально удалённые, ч'), ('free', 'Свободный график, ч'),
+    ('late', 'Поздний приход, ч'), 
+    ('early', 'Ранние уходы, ч'), 
+    ('absent', 'Отсутствие (не в офисе), ч'), 
+    ('off', 'Вне графика, ч'),
+    ('above', 'СКУД выше РВ, ч'), 
+    ('below', 'СКУД ниже РВ, ч'),
+    ('early_arr', 'Ранний приход, ч (справочно)'), 
+    ('remote_rv', 'Потенциально удалённые, ч'), 
+    ('free', 'Свободный график, ч'),
 ]
 ALL_COLS = {k for k, _ in COL_TOGGLES}
 
@@ -488,8 +550,11 @@ def dashboard_data(emps, days, group_by='department', filter_dept='', filter_uni
         if filter_dept and e.get('department') != filter_dept: continue
         if filter_unit and e.get('unit') != filter_unit: continue
         key = (e.get('department') or NO_DEPT) if group_by == 'department' else (e.get('unit') or NO_UNIT)
-        a = agg.setdefault(key, {'emp': 0, **{k: 0 for k in DKEYS}})
+        
+        a = agg.setdefault(key, {'emp': 0, 'bc_skud': 0.0, **{k: 0 for k in DKEYS}})
         a['emp'] += 1
+        a['bc_skud'] += e.get('bc_skud', 0.0)
+        
     for x in days:
         if filter_dept and x.get('department') != filter_dept: continue
         if filter_unit and x.get('unit') != filter_unit: continue
@@ -498,12 +563,17 @@ def dashboard_data(emps, days, group_by='department', filter_dept='', filter_uni
         m = x.get('m')
         if a is None or not m: continue
         for k in DKEYS: a[k] += m[k]
+        
     rows = []
     for name, a in agg.items():
-        r = dict(a); r['name'] = name; r['diff'] = r['fact'] - r['plan']; rows.append(r)
+        r = dict(a); r['name'] = name; r['diff'] = r['fact'] - r['plan']; 
+        r['fact_diff'] = r.get('bc_skud', 0) - r.get('fact', 0)
+        rows.append(r)
     rows.sort(key=lambda r: (-r['diff'], r['name']))
-    total = {'emp': sum(r['emp'] for r in rows), **{k: sum(r[k] for r in rows) for k in DKEYS}}
+    
+    total = {'emp': sum(r['emp'] for r in rows), **{k: sum(r.get(k, 0) for k in DKEYS) for k in DKEYS}}
     total['diff'] = total['fact'] - total['plan']
+    total['fact_diff'] = total.get('bc_skud', 0) - total.get('fact', 0)
     return rows, total
 
 def export_dashboard_xlsx(emps, days, group_by, filter_dept, filter_unit, path, sheet_name):
@@ -524,21 +594,21 @@ def export_dashboard_xlsx(emps, days, group_by, filter_dept, filter_unit, path, 
         elif diff_min > 5: norm_status = 'Переработка'
         else: norm_status = 'Норма'
         pct = round((r['diff'] / r['plan'] * 100), 1) if r['plan'] else 0.0
-        return [label, r['emp'], hrs(r['plan']), hrs(r['fact']), hrs(r['diff']), hrs(r['late']), hrs(r['early']), hrs(r['late_leave']), hrs(r['off']), hrs(r['early_arr']), hrs(r['remote_rv']), hrs(r['free']), norm_status, pct]
+        return [label, r['emp'], hrs(r['plan']), hrs(r['fact']), hrs(r['bc_skud']), hrs(r['fact_diff']), hrs(r['diff']), hrs(r['late']), hrs(r['early']), hrs(r['late_leave']), hrs(r['off']), hrs(r['early_arr']), hrs(r['remote_rv']), hrs(r['free']), norm_status, pct]
     red = PatternFill(start_color='FDECEC', end_color='FDECEC', fill_type='solid')
     grn = PatternFill(start_color='E3F6E9', end_color='E3F6E9', fill_type='solid')
     for r in rows:
         ws.append(line(r['name'], r)); n = ws.max_row
-        if r['diff'] < 0: ws.cell(n, 6).fill = red
-        elif r['diff'] > 0: ws.cell(n, 6).fill = grn
+        if r['diff'] < 0: ws.cell(n, 8).fill = red
+        elif r['diff'] > 0: ws.cell(n, 8).fill = grn
     ws.append(line('ИТОГО', total)); n = ws.max_row
-    for c in range(1, 15): ws.cell(n, c).font = Font(bold=True)
+    for c in range(1, 17): ws.cell(n, c).font = Font(bold=True)
     for r in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in r:
             cell.border = border
             if cell.column > 1: cell.alignment = Alignment(horizontal='center')
     ws.freeze_panes = 'B2'; ws.column_dimensions['A'].width = 34
-    for c in range(2, 15): ws.column_dimensions[get_column_letter(c)].width = 16
+    for c in range(2, 17): ws.column_dimensions[get_column_letter(c)].width = 16
     wb.save(path)
 
 def snapshot_path(period_key): return HISTORY_DIR / f'{period_key}.pkl'
@@ -693,15 +763,12 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
         s = e['summary']
         status = ('<span class="tag tag-gray">Увольнение сотрудника</span>' if s['termination'] else '<span class="tag tag-green">Сформирован</span>')
         
-        # Берем чистую переработку по СКУД (above) и вычитаем недоработки (below)
-        # Но недоработки в дни прогулов мы не учитываем, поэтому diff_min считаем так:
         diff_min = (s.get('above', 0) - s.get('below', 0)) * 60
         absent_min = s.get('absent', 0) * 60
         
         if abs(diff_min) <= 5:
             diff_min = 0
 
-        # Если есть переработка по СКУД, ставим статус "Переработка", даже если общий баланс 0
         if s.get('above', 0) > 0 or diff_min > 5:
             norm_status = '<span class="tag" style="background:#fff6df;color:#8a5a00">Переработка</span>'
             norm_class = 'pos strong'
@@ -716,6 +783,9 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
         if abs(pct) <= 1: pct_class = 'grey'
         elif abs(pct) <= 5: pct_class = 'pos' if pct > 0 else 'neg'
         else: pct_class = 'neg strong' if pct < 0 else 'pos strong'
+
+        bc_skud = e.get('bc_skud', 0.0)
+        bc_diff = bc_skud - s['fact']
         
         sr.append('<tr>'
             '<td>' + esc(e['number']) + '</td>'
@@ -734,6 +804,8 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
             '<td>' + str(s['late_leave']) + '</td>'
             '<td>' + fh(s['above']) + '</td>'
             '<td>' + fh(s['below']) + '</td>'
+            '<td class="pos strong">' + fh(bc_skud) + '</td>'
+            '<td class="' + ('pos' if bc_diff > 0 else ('neg' if bc_diff < 0 else '')) + '">' + fsigned(bc_diff) + '</td>'
             '<td class="' + norm_class + '">' + fsigned(diff_min) + '</td>'
             '<td>' + ('<span class="tag tag-red">Есть отсутствие</span>' if absent_min > 0 else '—') + '</td>'
             '<td class="' + pct_class + '">' + f'{pct:+.1f}%' + '</td>'
@@ -773,6 +845,7 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
              '<th>Рабочие дни</th><th>Удалённые дни</th><th>Поздний приход</th><th>Ранние уходы</th>'
              '<th>Аномально ранние</th><th>Поздние уходы</th><th>СКУД выше РВ</th>'
              '<th>СКУД ниже РВ</th>'
+             '<th>СКУД БЦ (здание), ч</th><th>Разница СКУД/БЦ, ч</th>'
              '<th>Отклонение, ч</th><th>Отметка об отсутствии</th><th>Отклонение, %</th><th>Статус нормы</th>'
              '<th>Статус</th></tr>')
 
@@ -813,7 +886,7 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
     head_cells = ['<th>' + ('Департамент' if group_by == 'department' else 'Подразделение') + '</th>']
     head_cells.append('<th>Сотрудники</th>')
     col_titles = {
-        'plan': 'План (РВ), ч', 'fact': 'Факт, ч', 'diff': 'Разница, ч', 
+        'plan': 'План (РВ), ч', 'fact': 'Факт, ч', 'bc_skud': 'СКУД БЦ, ч', 'fact_diff': 'Разница СКУД/БЦ', 'diff': 'Разница, ч', 
         'norm': 'Статус нормы', 'pct': 'Отклонение, %', 
         'late': 'Поздний приход, ч', 'early': 'Ранние уходы, ч', 
         'absent': 'Отсутствие (не в офисе), ч', 'off': 'Вне графика, ч', 
@@ -830,10 +903,14 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
         for k, _ in COL_TOGGLES:
             if k not in active_cols: continue
             if k == 'diff': 
-                # Считаем разницу так же, как в карточке сотрудника (без учета прогулов)
                 dept_diff = (r.get('above', 0) - r.get('below', 0)) * 60
                 if abs(dept_diff) <= 5: dept_diff = 0
                 cells.append('<td class="' + sgn(dept_diff) + ' strong">' + fsigned(dept_diff) + '</td>')
+            elif k == 'bc_skud':
+                cells.append('<td class="pos strong">' + fm(r.get('bc_skud', 0)) + '</td>')
+            elif k == 'fact_diff':
+                bcd = r.get('bc_skud', 0) - r.get('fact', 0)
+                cells.append('<td class="' + ('pos' if bcd>0 else ('neg' if bcd<0 else '')) + '">' + fsigned(bcd) + '</td>')
             elif k == 'norm':
                 dm = r['diff']
                 if dm < -5: cells.append('<td><span class="tag tag-red">Недоработка</span></td>')
