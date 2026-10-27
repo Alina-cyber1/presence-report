@@ -9,44 +9,67 @@ from openpyxl.utils import get_column_letter
 BASE_DIR = Path(__file__).resolve().parent
 
 # ==========================================================
-# ФУНКЦИЯ ЗАГРУЗКИ ДАННЫХ БЦ
+# ФУНКЦИЯ ЗАГРУЗКИ ДАННЫХ БЦ (ПО ДНЯМ)
 # ==========================================================
 def load_bc_data(bc_path):
-    """Читает отчет БЦ и возвращает словарь {нормализованный_табельный: часы_в_БЦ}"""
-    bc_hours = {}
-    if not Path(bc_path).exists():
-        print(f"[BC] Файл не найден: {bc_path}")
-        return bc_hours
+    """Читает отчет БЦ и возвращает словарь {табельный: {день_месяца: часы_в_БЦ}}"""
+    bc_data = {}
+    if not bc_path or not Path(bc_path).exists():
+        return bc_data
     
     try:
         import pandas as pd
         df = pd.read_excel(bc_path, header=None, dtype=str)
-        for _, row in df.iterrows():
-            tab = row[3] # Колонка D (индекс 3) - табельный номер
-            if pd.isna(tab): continue
-            
-            tab_n = re.sub(r"\s+", "", str(tab).strip())
-            m = re.fullmatch(r"(\d{4})(\d+)", tab_n)
-            if m: tab_n = f"{m.group(1)}-{m.group(2)}"
-            
-            if not re.match(r"^\d{4}-\d+", tab_n): continue
-            
-            hours = 0.0
-            for c in range(len(row) - 1, 3, -1):
-                v = row[c]
-                if pd.notna(v) and ":" in str(v):
-                    hm = re.match(r"^(\d+):(\d{2})", str(v))
-                    if hm:
-                        hours = int(hm.group(1)) + int(hm.group(2)) / 60.0
-                        break
-            
-            if hours > 0:
-                bc_hours[tab_n] = round(hours, 2)
         
-        print(f"[BC] Загружено {len(bc_hours)} сотрудников из отчета БЦ.")
+        # 1. Ищем строку с шапкой дней (где написано "1", "2" и т.д.)
+        day_col_start = None
+        for r_idx in range(min(15, len(df))):
+            row = df.iloc[r_idx]
+            for c_idx in range(len(row)):
+                if pd.notna(row[c_idx]) and str(row[c_idx]).strip() == '1':
+                    day_col_start = c_idx
+                    break
+            if day_col_start: break
+            
+        if day_col_start is None:
+            day_col_start = 13 # fallback
+
+        # 2. Читаем данные сотрудников
+        for _, row in df.iterrows():
+            tab_cell = row[3] if len(row) > 3 else None
+            if pd.isna(tab_cell): continue
+            
+            # Нормализуем табельный
+            tab_n = re.sub(r"\s+", "", str(tab_cell).strip())
+            m = re.search(r"(\d{4})\D*(\d{5})", tab_n)
+            if not m: continue
+            tab_n = f"{m.group(1)}-{m.group(2)}"
+            
+            days_hours = {}
+            day_num = 1
+            
+            # 3. Идем по колонкам парами (Интервал, Итог). Нам нужен Итог.
+            for c in range(day_col_start, len(row) - 1, 2):
+                time_cell = row[c+1] # Колонка с итогом (например, 7:57)
+                
+                if pd.notna(time_cell):
+                    time_str = str(time_cell).strip()
+                    # Ищем формат ЧЧ:ММ
+                    hm_match = re.match(r'^(\d+):(\d{2})$', time_str)
+                    if hm_match:
+                        h = int(hm_match.group(1))
+                        m_min = int(hm_match.group(2))
+                        days_hours[day_num] = round(h + m_min / 60.0, 2)
+                
+                day_num += 1
+                
+            if days_hours:
+                bc_data[tab_n] = days_hours
+                
+        print(f"[BC] Загружено {len(bc_data)} сотрудников. Данные по дням получены.")
     except Exception as e:
-        print(f"[BC] Ошибка чтения файла: {e}")
-    return bc_hours
+        print(f"[BC] Ошибка чтения БЦ: {e}")
+    return bc_data
 
 UPLOAD_DIR = BASE_DIR / 'uploads'
 EXPORT_DIR = BASE_DIR / 'exports'
@@ -311,7 +334,8 @@ def analyze(path, bc_path=None):
             tab_n = re.sub(r"\s+", "", personnel)
             m = re.fullmatch(r"(\d{4})(\d+)", tab_n)
             if m: tab_n = f"{m.group(1)}-{m.group(2)}"
-            bc_skud_hours = bc_map.get(tab_n, 0.0)
+            bc_emp_days = bc_map.get(tab_n, {})
+            total_bc_hours = sum(bc_emp_days.values())
 
             e = {
                 'number': number, 'name': name, 'position': position,
@@ -319,7 +343,7 @@ def analyze(path, bc_path=None):
                 'work_format': work_format, 'acc_type': acc_type,
                 'schedule': raw_schedule or 'График не указан',
                 'rule': rule,
-                'bc_skud': bc_skud_hours,
+                'bc_skud': round(total_bc_hours, 2),
                 'summary': {'work': 0, 'remote': 0, 'late': 0, 'early': 0, 'anomaly': 0, 'late_leave': 0, 'above': 0.0, 'below': 0.0, 'off': 0, 'problems': 0, 'excluded': False, 'termination': is_missing, 'plan': 0, 'fact': 0, 'absent': 0}
             }
 
@@ -337,6 +361,12 @@ def analyze(path, bc_path=None):
                 rv = num(data_row[c]) if c < len(data_row) else 0.0
                 skud = num(data_row[c + 1]) if c + 1 < len(data_row) else 0.0
                 start, end = parse_interval(raw)
+
+                # --- ЛОГИКА БЦ ПО ДНЯМ ---
+                # Если в основном файле нет СКУД, берем часы из БЦ
+                if skud == 0 and day in bc_emp_days:
+                    skud = bc_emp_days[day]
+                # -------------------------
                 
                 statuses = []
                 kind = ''
@@ -383,6 +413,10 @@ def analyze(path, bc_path=None):
                         statuses = ['Посещение вне графика / переработка']; kind = 'off_schedule'; e['summary']['off'] += 1
 
                 days.append({'number': number, 'name': name, 'position': position, 'department': department, 'unit': unit, 'work_format': work_format, 'date': date, 'rv': rv, 'skud': skud, 'interval': txt(raw) or '—', 'plan': plan, 'statuses': statuses, 'kind': kind, 'm': m})
+
+            # Если в основном файле нет факта, но есть часы в БЦ — берем БЦ как факт
+            if total_fact_min == 0 and total_bc_hours > 0:
+                total_fact_min = total_bc_hours * 60
 
             e['summary']['plan'] = round(total_plan_min / 60, 2)
             e['summary']['fact'] = round(total_fact_min / 60, 2)
@@ -502,7 +536,7 @@ def render_pie(title, parts):
 
 def export_xlsx(emps, days, path):
     wb = Workbook(); ws = wb.active; ws.title = 'Анализ данных'
-    headers = ['№', 'Департамент', 'Подразделение', 'Сотрудник', 'Должность', 'Табельный номер', 'Формат работы', 'График', 'Рабочие дни', 'Удалённые дни', 'Поздний приход', 'Ранние уходы', 'Аномально ранние приходы', 'Поздние уходы >5 мин', 'СКУД выше РВ, ч', 'СКУД ниже РВ, ч', 'Вне графика, дней', 'Проблемные дни', 'Статус формирования отчёта']
+    headers = ['№', 'Департамент', 'Подразделение', 'Сотрудник', 'Должность', 'Табельный номер', 'Формат работы', 'График', 'Рабочие дни', 'Удалённые дни', 'Поздний приход', 'Ранние уходы', 'Аномально ранние приходы', 'Поздние уходы >5 мин', 'СКУД выше РВ, ч', 'СКУД ниже РВ, ч', 'Вне графика, дней', 'Проблемные дни', 'СКУД БЦ (здание), ч', 'Разница СКУД/БЦ, ч', 'Статус формирования отчёта']
     ws.append(headers)
     header_fill = PatternFill(start_color='2F6FED', end_color='2F6FED', fill_type='solid'); header_font = Font(color='FFFFFF', bold=True, size=11)
     thin = Side(style='thin', color='D9DEE3'); border = Border(left=thin, right=thin, top=thin, bottom=thin); center = Alignment(horizontal='center', vertical='center')
@@ -511,11 +545,13 @@ def export_xlsx(emps, days, path):
     green = PatternFill(start_color='E3F6E9', end_color='E3F6E9', fill_type='solid'); gray = PatternFill(start_color='FDECEC', end_color='FDECEC', fill_type='solid')
     for e in emps:
         s = e['summary']; status = 'Увольнение сотрудника' if s['termination'] else 'Сформирован'
-        ws.append([e['number'], e.get('department', ''), e.get('unit', ''), e['name'], e.get('position', ''), e['personnel'], e['work_format'], e['schedule'], s['work'], s['remote'], s['late'], s['early'], s['anomaly'], s['late_leave'], round(s['above'], 2), round(s['below'], 2), s['off'], s['problems'], status])
-        r = ws.max_row; ws.cell(r, 19).fill = gray if s['termination'] else green
-        for c in range(1, 20): ws.cell(r, c).border = border; ws.cell(r, c).alignment = center if c not in (4, 5, 7, 8) else Alignment()
+        bc_skud = e.get('bc_skud', 0.0)
+        bc_diff = bc_skud - s['fact']
+        ws.append([e['number'], e.get('department', ''), e.get('unit', ''), e['name'], e.get('position', ''), e['personnel'], e['work_format'], e['schedule'], s['work'], s['remote'], s['late'], s['early'], s['anomaly'], s['late_leave'], round(s['above'], 2), round(s['below'], 2), s['off'], s['problems'], round(bc_skud, 2), round(bc_diff, 2), status])
+        r = ws.max_row; ws.cell(r, 21).fill = gray if s['termination'] else green
+        for c in range(1, 22): ws.cell(r, c).border = border; ws.cell(r, c).alignment = center if c not in (4, 5, 7, 8) else Alignment()
     ws.freeze_panes = 'A2'; ws.auto_filter.ref = ws.dimensions
-    widths = {1: 8, 2: 28, 3: 28, 4: 32, 5: 28, 6: 16, 7: 16, 8: 40, 9: 11, 10: 12, 11: 11, 12: 11, 13: 14, 14: 14, 15: 12, 16: 12, 17: 12, 18: 12, 19: 22}
+    widths = {1: 8, 2: 28, 3: 28, 4: 32, 5: 28, 6: 16, 7: 16, 8: 40, 9: 11, 10: 12, 11: 11, 12: 11, 13: 14, 14: 14, 15: 12, 16: 12, 17: 12, 18: 12, 19: 16, 20: 16, 21: 22}
     for c, w in widths.items(): ws.column_dimensions[get_column_letter(c)].width = w
 
     wd = wb.create_sheet('Дни')
@@ -566,6 +602,7 @@ def dashboard_data(emps, days, group_by='department', filter_dept='', filter_uni
         m = x.get('m')
         if a is None or not m: continue
         for k in DKEYS: a[k] += m.get(k, 0)
+        
     rows = []
     for name, a in agg.items():
         r = dict(a); r['name'] = name; r['diff'] = r['fact'] - r['plan']; 
@@ -717,16 +754,18 @@ def admin_form():
     hist = list_history(); hist_html = ''
     if hist: hist_html = '<div class="card"><h2>Загруженные периоды (в истории)</h2><p class="muted">' + ', '.join(hist) + '</p></div>'
     return ('<h1>Анализ присутствия сотрудников — Админ</h1><p class="subtitle">Загрузка файлов и публикация дашборда для руководителей</p>'
-'<div class="card">'
-'<form method="post" enctype="multipart/form-data" action="/upload">'
-  '<div style="display:flex;flex-direction:column;gap:10px;max-width:520px">'
-    '<label><b>1. Отчёт о присутствии (основной):</b><br>'
-      '<input type="file" name="main_file" accept=".xlsx,.xls" required></label>'
-    '<label><b>2. Отчёт БЦ / СКУД здания (дополнительный):</b><br>'
-      '<input type="file" name="bc_file" accept=".xlsx,.xls"></label>'
-  '</div>'
-  '<p><button class="btn">Обработать и опубликовать</button></p>'
-'</form>' + note + '</div>' + hist_html)
+    '<div class="card">'
+    '<form method="post" enctype="multipart/form-data" action="/upload">'
+      '<div style="display:flex;flex-direction:column;gap:10px;max-width:520px">'
+        '<label><b>1. Отчёт о присутствии (основной):</b><br>'
+          '<input type="file" name="main_file" accept=".xlsx,.xls" required></label>'
+        '<label><b>2. Отчёт БЦ / СКУД здания (дополнительный):</b><br>'
+          '<input type="file" name="bc_file" accept=".xlsx,.xls"></label>'
+        '<label><b>3. Справочник департаментов (опционально):</b><br>'
+          '<input type="file" name="dict_file" accept=".xlsx,.xls"></label>'
+      '</div>'
+      '<p><button class="btn">Обработать и опубликовать</button></p>'
+    '</form>' + note + '</div>' + hist_html)
             
 def public_empty():
     return ('<h1>Анализ присутствия сотрудников</h1><p class="subtitle">Дашборд для руководителей</p>'
@@ -780,7 +819,7 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
         if abs(diff_min) <= 5:
             diff_min = 0
 
-        if s.get('above', 0) > 0 or diff_min > 5:
+        if diff_min > 5:
             norm_status = '<span class="tag" style="background:#fff6df;color:#8a5a00">Переработка</span>'
             norm_class = 'pos strong'
         elif diff_min < -5:
@@ -818,7 +857,7 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
             '<td class="pos strong">' + fh(bc_skud) + '</td>'
             '<td class="' + ('pos' if bc_diff > 0 else ('neg' if bc_diff < 0 else '')) + '">' + fsigned(bc_diff) + '</td>'
             '<td class="' + norm_class + '">' + fsigned(diff_min) + '</td>'
-            '<td>' + ('<span class="tag tag-red">Есть отсутствие</span>' if absent_min > 0 else '—') + '</td>'
+            '<td>' + ('<span class="tag tag-red">Есть отсутствие</span>' if (absent_min > 0 and bc_skud == 0) else '—') + '</td>'
             '<td class="' + pct_class + '">' + f'{pct:+.1f}%' + '</td>'
             '<td>' + norm_status + '</td>'
             '<td>' + status + '</td>'
@@ -973,7 +1012,7 @@ def render_dynamics(filter_dept='', filter_unit=''):
         for x in days:
             m = x.get('m')
             if not m: continue
-            for k in DKEYS: agg[k] += m[k]
+            for k in DKEYS: agg[k] += m.get(k, 0)
         agg['diff'] = agg['fact'] - agg['plan']
         def sgn(v): return 'neg' if round(v) < 0 else ('pos' if round(v) > 0 else '')
         diff_html = ('<span class="' + sgn(agg['diff']) + ' strong">' + fsigned(agg['diff']) + '</span>')
@@ -1019,12 +1058,13 @@ def admin_index(): return build_page(request.args.get('tab', 'dashboard_dept'), 
 def upload():
     main_f = request.files.get('main_file')
     bc_f   = request.files.get('bc_file')
+    dict_f = request.files.get('dict_file')
 
     if not main_f or not main_f.filename:
         STATE['error'] = 'Не загружен основной файл отчёта о присутствии'
         return redirect('/admin')
 
-    for f in (main_f, bc_f):
+    for f in (main_f, bc_f, dict_f):
         if f and f.filename and Path(f.filename).suffix.lower() not in ('.xlsx', '.xls'):
             STATE['error'] = 'Файлы должны иметь расширение .xlsx или .xls'
             return redirect('/admin')
@@ -1035,19 +1075,19 @@ def upload():
     try: target_main.replace(LAST_FILE)
     except Exception: pass
 
-    # сохраняем второй файл (БЦ) рядом с основным
     bc_path = None
     if bc_f and bc_f.filename:
         safe_bc = Path(bc_f.filename).name
         bc_path = UPLOAD_DIR / safe_bc
         bc_f.save(bc_path)
 
+    if dict_f and dict_f.filename:
+        dict_f.save(BASE_DIR / 'Справочник.xlsx')
+
     STATE['status'] = 'processing'; STATE['error'] = None
     try:
         prepared = UPLOAD_DIR / 'prepared.xlsx'
         prepare_upload(LAST_FILE, prepared)
-
-        # ---- передаём путь к БЦ в analyze ----
         emps, days, meta = analyze(prepared, bc_path=bc_path)
 
         STATE['employees'] = emps; STATE['days'] = days
