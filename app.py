@@ -137,7 +137,7 @@ def is_employee_row(row):
     return True
 
 def strict_day(rule, missing, start, end, rv, skud, acc_type, absence_type=''):
-    z = {'plan': 0, 'fact': 0, 'late': 0, 'early': 0, 'late_leave': 0, 'off': 0, 'early_arr': 0, 'remote_rv': 0, 'free': 0, 'absent': 0, 'above': 0.0, 'below': 0.0}
+    z = {'plan': 0, 'fact': 0, 'late': 0, 'early': 0, 'late_leave': 0, 'off': 0, 'early_arr': 0, 'remote_rv': 0, 'free': 0, 'absent': 0, 'above': 0.0, 'below': 0.0, 'bc_skud': 0.0}
     if absence_type: return z
     has_int = start is not None and end is not None
     presence = max(end - start, 0) if has_int else round(skud * 60)
@@ -565,8 +565,7 @@ def dashboard_data(emps, days, group_by='department', filter_dept='', filter_uni
         a = agg.get(key)
         m = x.get('m')
         if a is None or not m: continue
-        for k in DKEYS: a[k] += m[k]
-        
+        for k in DKEYS: a[k] += m.get(k, 0)
     rows = []
     for name, a in agg.items():
         r = dict(a); r['name'] = name; r['diff'] = r['fact'] - r['plan']; 
