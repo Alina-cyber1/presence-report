@@ -12,15 +12,12 @@ BASE_DIR = Path(__file__).resolve().parent
 # ФУНКЦИЯ ЗАГРУЗКИ ДАННЫХ БЦ (ПО ДНЯМ)
 # ==========================================================
 def load_bc_data(bc_path):
-    """Читает отчет БЦ. Возвращает {табельный: {день: {'hours': часы, 'interval': интервал}}}"""
     bc_data = {}
     if not bc_path or not Path(bc_path).exists():
         return bc_data
-    
     try:
         wb = load_workbook(bc_path, data_only=True, read_only=True)
         ws = wb.active
-        
         day_col_start = None
         header_row = None
         for r_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
@@ -39,22 +36,17 @@ def load_bc_data(bc_path):
         for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
             tab_cell = row[3] if len(row) > 3 else None
             if not tab_cell: continue
-            
             tab_str = str(tab_cell).strip()
             m = re.search(r"(\d{4})\D*(\d{5})", tab_str)
             if not m: continue
             tab_n = f"{m.group(1)}-{m.group(2)}"
-            
             days_data = {}
             day_num = 1
-            
             for c in range(day_col_start, len(row) - 1, 2):
                 interval_cell = row[c]
                 hours_cell = row[c+1]
-                
                 hours_val = 0.0
                 interval_str = '—'
-                
                 if hours_cell is not None:
                     if isinstance(hours_cell, (int, float)):
                         hours_val = round(hours_cell * 24, 2)
@@ -64,7 +56,6 @@ def load_bc_data(bc_path):
                         if hm_match:
                             hours_val = int(hm_match.group(1)) + int(hm_match.group(2)) / 60.0
                             hours_val = round(hours_val, 2)
-                
                 if interval_cell is not None:
                     int_str = str(interval_cell).strip()
                     times = re.findall(r'(\d{1,2}:\d{2})', int_str)
@@ -72,15 +63,11 @@ def load_bc_data(bc_path):
                         interval_str = f"{times[0]} - {times[1]}"
                     elif len(times) == 1:
                         interval_str = times[0]
-                
                 if hours_val > 0 or interval_str != '—':
                     days_data[day_num] = {'hours': hours_val, 'interval': interval_str}
-                
                 day_num += 1
-                
             if days_data:
                 bc_data[tab_n] = days_data
-                
         wb.close()
     except Exception as e:
         print(f"[BC] Ошибка чтения БЦ: {e}")
@@ -600,21 +587,36 @@ def export_xlsx(emps, days, path):
     ws.column_dimensions['B'].width = 28; ws.column_dimensions['C'].width = 28; ws.column_dimensions['D'].width = 32; ws.column_dimensions['E'].width = 28; ws.column_dimensions['H'].width = 40
 
     wd = wb.create_sheet('Дни')
-    dheaders = ['№', 'Департамент', 'Подразделение', 'Сотрудник', 'Должность', 'Формат работы', 'Дата', 'РВ', 'СКУД', 'Интервал (основной)', 'Интервал (БЦ)', 'Общее время БЦ, ч', 'План', 'Статусы']
+    dheaders = ['№', 'Департамент', 'Подразделение', 'Сотрудник', 'Должность', 'Формат работы', 'Дата', 'РВ (план), ч', 
+                'Интервал СКУД', 'Общее СКУД, ч', 'Отклонение СКУД, ч',
+                'Интервал БЦ', 'Общее БЦ, ч', 'Отклонение БЦ, ч', 'Статусы']
     wd.append(dheaders)
     for cell in wd[1]: cell.fill = header_fill; cell.font = header_font; cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True); cell.border = border
-    wd.row_dimensions[1].height = 28
+    wd.row_dimensions[1].height = 40
     bad = PatternFill(start_color='FDECEC', end_color='FDECEC', fill_type='solid'); warn = PatternFill(start_color='FFF6DF', end_color='FFF6DF', fill_type='solid'); blue = PatternFill(start_color='EAF1FF', end_color='EAF1FF', fill_type='solid')
     for d in days:
-        wd.append([d['number'], d.get('department', ''), d.get('unit', ''), d['name'], d.get('position', ''), d['work_format'], d['date'], d['rv'], d['skud'], d['interval'], d.get('bc_interval', '—'), d.get('bc_hours', 0.0), d['plan'], '; '.join(d['statuses'])])
+        # Отклонение СКУД
+        day_diff_skud = 0
+        if d['skud'] > 0 and d['rv'] > 0:
+            day_diff_skud = round((d['skud'] - d['rv']), 2)
+
+        # Отклонение БЦ
+        day_diff_bc = 0
+        bc_hours = d.get('bc_hours', 0.0)
+        if bc_hours > 0 and d['rv'] > 0:
+            day_diff_bc = round((bc_hours - d['rv']), 2)
+
+        wd.append([d['number'], d.get('department', ''), d.get('unit', ''), d['name'], d.get('position', ''), d['work_format'], d['date'], d['rv'], 
+                   d['interval'], d['skud'], day_diff_skud,
+                   d.get('bc_interval', '—'), bc_hours, day_diff_bc, '; '.join(d['statuses'])])
         st = d['statuses']; b = any(x.startswith(('Опоздание', 'Ранний уход', 'Аномально', 'Проблема', 'Нераспознанный')) for x in st); w = any(x.startswith(('Поздний уход', 'Отклонение длительности')) for x in st)
         fill = bad if b else (warn if w else (blue if d['kind'] in ('remote', 'free', 'off_schedule') else None))
         if fill:
             r = wd.max_row
-            for c in range(1, 15): wd.cell(r, c).fill = fill
+            for c in range(1, 16): wd.cell(r, c).fill = fill
     wd.freeze_panes = 'A2'; wd.auto_filter.ref = wd.dimensions
-    for c in range(1, 15): wd.column_dimensions[get_column_letter(c)].width = 16
-    wd.column_dimensions['B'].width = 28; wd.column_dimensions['C'].width = 28; wd.column_dimensions['D'].width = 32; wd.column_dimensions['E'].width = 28; wd.column_dimensions['N'].width = 60
+    for c in range(1, 16): wd.column_dimensions[get_column_letter(c)].width = 16
+    wd.column_dimensions['B'].width = 28; wd.column_dimensions['C'].width = 28; wd.column_dimensions['D'].width = 32; wd.column_dimensions['E'].width = 28; wd.column_dimensions['O'].width = 60
 
     de = wb.create_sheet('Описание значений')
     de.append(['Колонка', 'Описание'])
@@ -658,10 +660,6 @@ def dashboard_data(emps, days, group_by='department', filter_dept='', filter_uni
     total = {'emp': sum(r['emp'] for r in rows), **{k: sum(r.get(k, 0) for k in DKEYS) for k in DKEYS}}
     total['diff'] = total['fact'] - total['plan']
     total['fact_diff'] = total.get('bc_skud', 0) - total.get('fact', 0)
-    
-    # Исправление астрономических цифр в ИТОГО:
-    for k in ['absent', 'off']:
-        total[k] = total[k] / 60.0 
     return rows, total
 
 def export_dashboard_xlsx(emps, days, group_by, filter_dept, filter_unit, path, sheet_name):
@@ -932,25 +930,36 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
         warn = any(x.startswith(('Поздний уход', 'Отклонение длительности')) for x in d['statuses'])
         cl = 'bad' if bad else ('warn' if warn else ('blue' if d['kind'] in ('remote', 'free', 'off_schedule') else ''))
         
-        day_diff_min = 0
-        diff_class = ''
+        day_diff_skud = 0
+        diff_class_skud = ''
         if d['rv'] > 0 and d['skud'] <= 0:
-            day_diff_min = 0
-            diff_class = 'grey'
+            day_diff_skud = 0
+            diff_class_skud = 'grey'
         elif d['skud'] > 0 and d['rv'] > 0:
-            day_diff_min = (d['skud'] - d['rv']) * 60
-            diff_class = 'pos' if day_diff_min > 0 else ('neg' if day_diff_min < 0 else '')
+            day_diff_skud = (d['skud'] - d['rv']) * 60
+            diff_class_skud = 'pos' if day_diff_skud > 0 else ('neg' if day_diff_skud < 0 else '')
+
+        day_diff_bc = 0
+        diff_class_bc = ''
+        bc_hours_today = d.get('bc_hours', 0.0)
+        if d['rv'] > 0 and bc_hours_today <= 0:
+            day_diff_bc = 0
+            diff_class_bc = 'grey'
+        elif bc_hours_today > 0 and d['rv'] > 0:
+            day_diff_bc = (bc_hours_today - d['rv']) * 60
+            diff_class_bc = 'pos' if day_diff_bc > 0 else ('neg' if day_diff_bc < 0 else '')
             
         dr.append('<tr class="' + cl + '">'
             '<td>' + esc(d['number']) + '</td>'
             '<td class="name">' + esc(d['name']) + '</td>'
             '<td>' + esc(d['date']) + '</td>'
             '<td>' + esc(d['interval']) + '</td>'
-            '<td>' + esc(d.get('bc_interval', '—')) + '</td>'
-            '<td>' + fh(d.get('bc_hours', 0.0)) + '</td>'
-            '<td>' + fh(d['rv']) + '</td>'
             '<td>' + fh(d['skud']) + '</td>'
-            '<td class="' + diff_class + ' strong">' + fsigned(day_diff_min) + '</td>'
+            '<td class="' + diff_class_skud + ' strong">' + fsigned(day_diff_skud) + '</td>'
+            '<td>' + esc(d.get('bc_interval', '—')) + '</td>'
+            '<td>' + fh(bc_hours_today) + '</td>'
+            '<td class="' + diff_class_bc + ' strong">' + fsigned(day_diff_bc) + '</td>'
+            '<td>' + fh(d['rv']) + '</td>'
             '<td>' + esc(st) + '</td>'
             '</tr>')
 
@@ -964,8 +973,15 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
              '<th>Отклонение СКУД, ч</th><th>Отклонение СКУД, %</th><th>Статус нормы СКУД</th>'
              '<th>Статус</th></tr>')
 
-    thead_days = ('<tr><th>№</th><th>Сотрудник</th><th>Дата</th><th>Интервал (основной)</th><th>Интервал БЦ</th><th>Общее время БЦ, ч</th>'
-                  '<th>РВ (план), ч</th><th>СКУД, ч</th><th>Отклонение по дню, ч</th><th>Статусы дня</th></tr>')
+    thead_days = ('<tr>'
+                  '<th>№</th><th>Сотрудник</th><th>Дата</th>'
+                  '<th colspan="3" style="text-align:center; border-bottom: 1px solid #ccc;">СКУД (Основной)</th>'
+                  '<th colspan="3" style="text-align:center; border-bottom: 1px solid #ccc;">БЦ (Здание)</th>'
+                  '<th rowspan="2">РВ (план), ч</th><th rowspan="2">Статусы дня</th></tr>'
+                  '<tr>'
+                  '<th>Интервал</th><th>Общее время, ч</th><th>Отклонение, ч</th>'
+                  '<th>Интервал</th><th>Общее время, ч</th><th>Отклонение, ч</th>'
+                  '</tr>')
 
     bc_total_header = ''
     if es:
