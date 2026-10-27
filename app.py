@@ -658,6 +658,10 @@ def dashboard_data(emps, days, group_by='department', filter_dept='', filter_uni
     total = {'emp': sum(r['emp'] for r in rows), **{k: sum(r.get(k, 0) for k in DKEYS) for k in DKEYS}}
     total['diff'] = total['fact'] - total['plan']
     total['fact_diff'] = total.get('bc_skud', 0) - total.get('fact', 0)
+    
+    # Исправление астрономических цифр в ИТОГО:
+    for k in ['absent', 'off']:
+        total[k] = total[k] / 60.0 
     return rows, total
 
 def export_dashboard_xlsx(emps, days, group_by, filter_dept, filter_unit, path, sheet_name):
@@ -963,13 +967,18 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
     thead_days = ('<tr><th>№</th><th>Сотрудник</th><th>Дата</th><th>Интервал (основной)</th><th>Интервал БЦ</th><th>Общее время БЦ, ч</th>'
                   '<th>РВ (план), ч</th><th>СКУД, ч</th><th>Отклонение по дню, ч</th><th>Статусы дня</th></tr>')
 
+    bc_total_header = ''
+    if es:
+        total_bc = sum(e.get('bc_skud', 0.0) for e in es)
+        bc_total_header = f' <span style="font-size:14px; font-weight:normal; color:#6b7684;">(Итого БЦ за период: {fh(total_bc)})</span>'
+
     return (filters + '<div class="card"><div class="grid">'
             '<div class="stat"><div class="metric">' + str(len(es)) + '</div><div class="stat-label">сотрудников</div></div>'
             '<div class="stat"><div class="metric">' + str(len(ds)) + '</div><div class="stat-label">дневных записей</div></div>'
             + export_btns + '</div></div>'
             '<div class="card"><h2>Анализ данных: ' + esc(title) + '</h2>'
             '<div class="wrap"><table>' + thead + ''.join(sr) + '</table></div></div>'
-            '<div class="card"><h2>Детализация по дням</h2>'
+            '<div class="card"><h2>Детализация по дням' + bc_total_header + '</h2>'
             '<div class="wrap"><table>' + thead_days
             + ''.join(dr) + '</table></div></div>')
 
@@ -1051,7 +1060,7 @@ def render_dashboard(emps, days, group_by, filter_dept='', filter_unit='', activ
             elif k in ('absent', 'off'):
                 cells.append('<td class="neg strong">' + fm(r.get(k, 0)) + '</td>')
             elif k in ('above', 'below'):
-                cells.append('<td>' + fm(r.get(k, 0) * 60) + '</td>')
+                cells.append('<td>' + fm(r.get(k, 0)) + '</td>')
             elif k in ('early_arr', 'remote_rv', 'free'): 
                 cells.append('<td class="grey">' + fm(r.get(k, 0)) + '</td>')
             else: 
