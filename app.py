@@ -241,7 +241,8 @@ def find_day_start(path):
         for r_idx in range(1, min(15, ws.max_row) + 1):
             for c_idx in range(1, ws.max_column + 1):
                 v = txt(ws.cell(row=r_idx, column=c_idx).value)
-                if re.match(r'^0?1(\s+\S+)?$', v):
+                # Ищем ячейку, где написано "1 Чт" или "1 Пт" (то есть день + день недели)
+                if re.match(r'^0?1\s+[А-Яа-я]{2}', v):
                     wb.close()
                     return c_idx - 1
         wb.close()
@@ -366,8 +367,6 @@ def analyze(path, bc_path=None):
                 if day in bc_emp_days:
                     bc_info = bc_emp_days[day]
                     bc_hours_today = bc_info['hours']
-                    if skud == 0:
-                        skud = bc_hours_today
                     if bc_info['interval'] != '—':
                         bc_interval = bc_info['interval']
                 
@@ -412,9 +411,9 @@ def analyze(path, bc_path=None):
                         else:
                             statuses = ['Проблема: нет полного интервала']; kind = 'problem'; e['summary']['problems'] += 1
                 elif rv <= 0:
-                    if raw or skud > 0:
+                    if (raw and txt(raw) != '—') or skud > 0:
                         statuses = ['Посещение вне графика / переработка']; kind = 'off_schedule'; e['summary']['off'] += 1
-
+                        
                 days.append({
                     'number': number, 'name': name, 'position': position, 'department': department, 'unit': unit, 
                     'work_format': work_format, 'date': date, 'rv': rv, 'skud': skud, 
@@ -954,10 +953,10 @@ def render_employees(emps, days, selected, dept_selected, unit_selected):
             '<td class="name">' + esc(d['name']) + '</td>'
             '<td>' + esc(d['date']) + '</td>'
             '<td>' + esc(d['interval']) + '</td>'
-            '<td>' + fh(d['skud']) + '</td>'
+            '<td>' + ('—' if d['skud'] == 0 else fh(d['skud'])) + '</td>' 
             '<td class="' + diff_class_skud + ' strong">' + fsigned(day_diff_skud) + '</td>'
             '<td>' + esc(d.get('bc_interval', '—')) + '</td>'
-            '<td>' + fh(bc_hours_today) + '</td>'
+            '<td>' + ('—' if bc_hours_today == 0 else fh(bc_hours_today)) + '</td>'     
             '<td class="' + diff_class_bc + ' strong">' + fsigned(day_diff_bc) + '</td>'
             '<td>' + fh(d['rv']) + '</td>'
             '<td>' + esc(st) + '</td>'
